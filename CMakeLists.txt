@@ -4,7 +4,7 @@ if (TARGET tinyusb_device)
     )
 
     # Pull in our pico_stdlib which aggregates commonly used features
-    target_link_libraries(6502emu pico_stdlib hardware_timer)
+    target_link_libraries(6502emu pico_stdlib hardware_timer hardware_vreg)
 
     # enable usb output, disable uart output
     pico_enable_stdio_usb(6502emu 1)

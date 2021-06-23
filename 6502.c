@@ -14,7 +14,7 @@ extern uint8_t read6502(uint16_t address);
 extern void write6502(uint16_t address, uint8_t value);
 
 //6502 defines
-#define UNDOCUMENTED //when this is defined, undocumented opcodes are handled.
+// #define UNDOCUMENTED //when this is defined, undocumented opcodes are handled.
                      //otherwise, they're simply treated as NOPs.
 
 #define CPU_65C02    // allows 65C02 instructions
@@ -140,7 +140,7 @@ static void indzp() { //indirect zero-page
     // get the zero page address to read the address from
     uint16_t zpa = (uint16_t)read6502((uint16_t)pc++);
     // get the effective address from zero page
-    ea = (uint16_t)(read6502(zpa) | (read6502(zpa+1) << 8));
+    ea = (uint16_t)(read6502(zpa) | (read6502((zpa+1) & 0xFF) << 8));
 }
 
 static void zpx() { //zero-page,X
@@ -193,10 +193,18 @@ static void absy() { //absolute,Y
 }
 
 static void ind() { //indirect
-    uint16_t eahelp, eahelp2;
+    uint16_t eahelp/*, eahelp2*/;
     eahelp = (uint16_t)read6502(pc) | (uint16_t)((uint16_t)read6502(pc+1) << 8);
-    eahelp2 = (eahelp & 0xFF00) | ((eahelp + 1) & 0x00FF); //replicate 6502 page-boundary wraparound bug
-    ea = (uint16_t)read6502(eahelp) | ((uint16_t)read6502(eahelp2) << 8);
+    //eahelp2 = (eahelp & 0xFF00) | ((eahelp + 1) & 0x00FF); //replicate 6502 page-boundary wraparound bug
+    ea = (uint16_t)read6502(eahelp) | ((uint16_t)read6502(eahelp +1) << 8);
+    pc += 2;
+}
+
+static void aindx() { //indirect
+    uint16_t eahelp;
+    eahelp = (uint16_t)read6502(pc) | (uint16_t)((uint16_t)read6502(pc+1) << 8);
+
+    ea = (uint16_t)read6502(eahelp+x) | ((uint16_t)read6502(eahelp +1 + x) << 8);
     pc += 2;
 }
 
@@ -234,30 +242,53 @@ static void putvalue(uint16_t saveval) {
 static void adc() {
     penaltyop = 1;
     value = getvalue();
-    result = (uint16_t)a + value + (uint16_t)(status & FLAG_CARRY);
-
-    carrycalc(result);
-    zerocalc(result);
-    overflowcalc(result, a, value);
-    signcalc(result);
-
+    
     #ifndef NES_CPU
     if (status & FLAG_DECIMAL) {
-        clearcarry();
-
-        if ((a & 0x0F) > 0x09) {
-            a += 0x06;
+        uint16_t s = 0;
+        uint16_t ln = (uint16_t)(a & 0xF) + (uint16_t)(value & 0xF) + (uint16_t)(status & FLAG_CARRY);
+        if (ln > 9) {
+            ln = 0x10 | ((ln + 6) & 0xf);
         }
-        if ((a & 0xF0) > 0x90) {
-            a += 0x60;
-            setcarry();
-        }
+        uint16_t hn = (uint16_t)(a & 0xf0) + (uint16_t)(value & 0xf0);
+        s = hn + (uint16_t)ln;
 
+            
+        if (s >= 160) {
+            status |= FLAG_CARRY;
+            if (((status & FLAG_OVERFLOW) != 0) && (s >= 0x180)) {
+                status &= !FLAG_OVERFLOW;
+            }
+            s += 0x60;
+        } else {
+            status &= !FLAG_CARRY;
+            if ((status & FLAG_OVERFLOW) != 0 && (s < 0x80)) {
+                status &= !FLAG_OVERFLOW;
+            }
+        }
+        result = (uint8_t)(s & 0xFF);
+        saveaccum(result);
+        zerocalc(result);
+        signcalc(result);
         clockticks6502++;
+    } else {
+    #endif
+        result = (uint16_t)a + value + (uint16_t)(status & FLAG_CARRY);
+
+        carrycalc(result);
+
+        zerocalc(result);
+        signcalc(result);
+
+        overflowcalc(result, a, value);
+
+        saveaccum(result);
+    #ifndef NES_CPU
     }
     #endif
+    
 
-    saveaccum(result);
+    
 }
 
 static void and() {
@@ -311,10 +342,19 @@ static void beq() {
 
 static void bit() {
     value = getvalue();
-    result = (uint16_t)a & value;
+    result = (uint16_t)a & (uint16_t)value;
 
     zerocalc(result);
-    status = (status & 0x3F) | (uint8_t)(value & 0xC0);
+    
+#ifdef CPU_65C02
+    // BIt immediate does not affect N nor V flags
+    if (addrtable[opcode] != imm) {
+#endif
+        status = (status & 0x3F) | (uint8_t)(value & 0xC0);
+#ifdef CPU_65C02
+    }
+#endif
+    
 }
 
 static void bmi() {
@@ -349,6 +389,9 @@ static void brk() {
     push16(pc); //push next instruction address onto stack
     push8(status | FLAG_BREAK); //push CPU status to stack
     setinterrupt(); //set interrupt flag
+#ifdef CPU_65C02
+    cleardecimal();
+#endif
     pc = (uint16_t)read6502(0xFFFE) | ((uint16_t)read6502(0xFFFF) << 8);
 }
 
@@ -606,32 +649,58 @@ static void rts() {
 
 static void sbc() {
     penaltyop = 1;
-    value = getvalue() ^ 0x00FF;
-    result = (uint16_t)a + value + (uint16_t)(status & FLAG_CARRY);
-
-    carrycalc(result);
-    zerocalc(result);
-    overflowcalc(result, a, value);
-    signcalc(result);
+    
+    
 
     #ifndef NES_CPU
     if (status & FLAG_DECIMAL) {
-        clearcarry();
+        value = getvalue();
+        uint16_t carry = (status & FLAG_CARRY) ? 0 : 1;
+        uint16_t low1 = a & 0x0F;
+        uint16_t low2 = value & 0x0F;
 
-        a -= 0x66;
-        if ((a & 0x0F) > 0x09) {
-            a += 0x06;
+        uint16_t sublow;
+        if (low1 >= (low2 + carry)) {
+            sublow = low1 - (low2 + carry);
+            carry = 0;
+        } else {
+            sublow = 10 + low1 - (low2 + carry);
+            carry = 1;
         }
-        if ((a & 0xF0) > 0x90) {
-            a += 0x60;
-            setcarry();
+        uint16_t hi1 = a >> 4;
+        uint16_t hi2 = value >> 4;
+        uint16_t subhi;
+        if (hi1 >= (hi2 + carry)) {
+            subhi = hi1 - (hi2 + carry);
+            carry = 1;
+        } else {
+            subhi = 10 + hi1 - (hi2 + carry);
+            carry = 0;
         }
+        
+        result = subhi << 4 | sublow;
 
+        if (carry) {
+            status |= FLAG_CARRY;
+        } else {
+            status &= ~FLAG_CARRY;
+        }
+    
         clockticks6502++;
+    } else {
+    #endif
+        value = getvalue() ^ 0x00FF;
+        result = (uint16_t)a + value + (uint16_t)(status & FLAG_CARRY);
+
+        carrycalc(result);
+        overflowcalc(result, a, value);
+    #ifndef NES_CPU
     }
     #endif
 
     saveaccum(result);
+    zerocalc(result);
+    signcalc(result);
 }
 
 static void sec() {
@@ -774,16 +843,17 @@ static void tya() {
 
     static void trb() {
         value = getvalue();
-        zerocalc(value & a);
-        uint8_t t = (a ^ 0xFF) & value;
+        
+        uint8_t t = ~a & value;
         putvalue(t);
+        zerocalc(value & a);
     }
     
     static void tsb() {
         value = getvalue();
-        zerocalc(value & a);
 
         putvalue(a | value);
+        zerocalc(value & a);
     }
     static void phx() {
         push8(x);
@@ -807,11 +877,11 @@ static void tya() {
 
     static void bbr(uint8_t b) {
         uint16_t zpa = (uint16_t)read6502(pc++);
-        uint8_t zpv = (uint8_t)read6502(zpa);
+        value = (uint8_t)read6502(zpa);
         
         pc++;
         oldpc = pc;
-        if ((zpv & (1 << b)) == 0) {
+        if ((value & (1 << b)) == 0) {
             pc += reladdr;
         }
         
@@ -821,10 +891,10 @@ static void tya() {
 
     static void bbs(uint8_t b) {
         uint16_t zpa = (uint16_t)read6502(pc++);
-        uint8_t zpv = (uint8_t)read6502(zpa);
+        value = (uint8_t)read6502(zpa);
         pc++;
         oldpc = pc;
-        if ((zpv & (1 << b)) != 0) {
+        if ((value & (1 << b)) != 0) {
             pc += reladdr;
         }
         
@@ -882,6 +952,69 @@ static void tya() {
         bbs(7);
     }
 
+    static void smb (uint8_t b) {
+        // Set specified ZP memory bit
+        value = getvalue();
+        putvalue(value | (1 << b));
+    }
+
+    static void rmb (uint8_t b) {
+        // clear specified ZP memory bit
+        value = getvalue();
+        putvalue(value & ((1 << b) ^ 0XFF));
+    }
+
+    static void rmb0() {
+        rmb(0);
+    }
+    static void rmb1() {
+        rmb(1);
+    }
+    static void rmb2() {
+        rmb(2);
+    }
+    static void rmb3() {
+        rmb(3);
+    }
+    static void rmb4() {
+        rmb(4);
+    }
+    static void rmb5() {
+        rmb(5);
+    }
+    static void rmb6() {
+        rmb(6);
+    }
+    static void rmb7() {
+        rmb(7);
+    }
+
+    static void smb0() {
+        smb(0);
+    }
+    static void smb1() {
+        smb(1);
+    }
+    static void smb2() {
+        smb(2);
+    }
+    static void smb3() {
+        smb(3);
+    }
+    static void smb4() {
+        smb(4);
+    }
+    static void smb5() {
+        smb(5);
+    }
+    static void smb6() {
+        smb(6);
+    }
+    static void smb7() {
+        smb(7);
+    }
+    
+
     #define abson rel2
     #define absxn rel2
     #define absyn rel2
@@ -909,17 +1042,57 @@ static void tya() {
     #define bbs5 isb
     #define bbs6 isb
     #define bbs7 isb
+
+    #define rmb0 slo
+    #define rmb1 slo 
+    #define rmb2 rla 
+    #define rmb3 rla 
+    #define rmb4 sre 
+    #define rmb5 sre 
+    #define rmb6 rra 
+    #define rmb7 rra 
+    #define smb0 sax 
+    #define smb1 sax 
+    #define smb2 lax 
+    #define smb3 lax 
+    #define smb4 dcp 
+    #define smb5 dcp 
+    #define smb6 isb 
+    #define smb7 isb 
 #endif
 
+
+#ifdef CPU_65C02
+    static void (*addrtable[256])() = {
+/*        |  0  |  1  |   2   |  3  |  4  |  5  |  6  |  7  |  8  |  9  |  A  |  B  |  C  |  D  |  E  |  F  |     */
+/* 0 */     imp, indx,  imm,   imp,   zp,   zp,   zp,   zp,  imp,  imm,  acc,  imp,  abso, abso, abso, abson, /* 0 */
+/* 1 */     rel, indy,  indzp, imp,   zp,  zpx,  zpx,   zp,  imp, absy,  acc,  imp,  abso, absx, absx, absxn, /* 1 */
+/* 2 */    abso, indx,  imm,   imp,   zp,   zp,   zp,   zp,  imp,  imm,  acc,  imp,  abso, abso, abso, abson, /* 2 */
+/* 3 */     rel, indy,  indzp, imp,  zpx,  zpx,  zpx,   zp,  imp, absy,  acc,  imp,  absx, absx, absx, absxn, /* 3 */
+/* 4 */     imp, indx,  imm,   imp,   zp,   zp,   zp,   zp,  imp,  imm,  acc,  imp,  abso, abso, abso, abson, /* 4 */
+/* 5 */     rel, indy,  indzp, imp,  zpx,  zpx,  zpx,   zp,  imp, absy,  imp,  imp,  absx, absx, absx, absxn, /* 5 */
+/* 6 */     imp, indx,  imm,   imp,   zp,   zp,   zp,   zp,  imp,  imm,  acc,  imp,   ind, abso, abso, abson, /* 6 */
+/* 7 */     rel, indy,  indzp, imp,  zpx,  zpx,  zpx,   zp,  imp, absy,  imp,  imp,  aindx, absx, absx, absxn, /* 7 */
+/* 8 */     rel, indx,  imm,   imp,   zp,   zp,   zp,   zp,  imp,  imm,  imp,  imp,  abso, abso, abso, abson, /* 8 */
+/* 9 */     rel, indy,  indzp, imp,  zpx,  zpx,  zpy,   zp,  imp, absy,  imp,  imp,  abso, absx, absx, absyn, /* 9 */
+/* A */     imm, indx,  imm,   imp,   zp,   zp,   zp,   zp,  imp,  imm,  imp,  imp,  abso, abso, abso, abson, /* A */
+/* B */     rel, indy,  indzp, imp,  zpx,  zpx,  zpy,   zp,  imp, absy,  imp,  imp,  absx, absx, absy, absyn, /* B */
+/* C */     imm, indx,  imm,   imp,   zp,   zp,   zp,   zp,  imp,  imm,  imp,  imp,  abso, abso, abso, abson, /* C */
+/* D */     rel, indy,  indzp, imp,  zpx,  zpx,  zpx,   zp,  imp, absy,  imp,  imp,  absx, absx, absx, absxn, /* D */
+/* E */     imm, indx,  imm,   imp,   zp,   zp,   zp,   zp,  imp,  imm,  imp,  imp,  abso, abso, abso, abson, /* E */
+/* F */     rel, indy,  indzp, imp,  zpx,  zpx,  zpx,   zp,  imp, absy,  imp,  imp,  absx, absx, absx, absxn  /* F */
+};
+
+#else
 static void (*addrtable[256])() = {
 /*        |  0  |  1  |   2   |  3  |  4  |  5  |  6  |  7  |  8  |  9  |  A  |  B  |  C  |  D  |  E  |  F  |     */
-/* 0 */     imp, indx,  imp,   indx,   zp,   zp,   zp,   zp,  imp,  imm,  acc,  imm, abso, abso, abso, abson, /* 0 */
+/* 0 */     imp, indx,  imm,   indx,   zp,   zp,   zp,   zp,  imp,  imm,  acc,  imm, abso, abso, abso, abson, /* 0 */
 /* 1 */     rel, indy,  indzp, indy,   zp,  zpx,  zpx,  zpx,  imp, absy,  acc, absy, abso, absx, absx, absxn, /* 1 */
-/* 2 */    abso, indx,  imp,   indx,   zp,   zp,   zp,   zp,  imp,  imm,  acc,  imm, abso, abso, abso, abson, /* 2 */
+/* 2 */    abso, indx,  imm,   indx,   zp,   zp,   zp,   zp,  imp,  imm,  acc,  imm, abso, abso, abso, abson, /* 2 */
 /* 3 */     rel, indy,  indzp, indy,  zpx,  zpx,  zpx,  zpx,  imp, absy,  acc, absy, absx, absx, absx, absxn, /* 3 */
-/* 4 */     imp, indx,  imp,   indx,   zp,   zp,   zp,   zp,  imp,  imm,  acc,  imm, abso, abso, abso, abson, /* 4 */
+/* 4 */     imp, indx,  imm,   indx,   zp,   zp,   zp,   zp,  imp,  imm,  acc,  imm, abso, abso, abso, abson, /* 4 */
 /* 5 */     rel, indy,  indzp, indy,  zpx,  zpx,  zpx,  zpx,  imp, absy,  imp, absy, absx, absx, absx, absxn, /* 5 */
-/* 6 */     imp, indx,  imp,   indx,   zp,   zp,   zp,   zp,  imp,  imm,  acc,  imm,  ind, abso, abso, abson, /* 6 */
+/* 6 */     imp, indx,  imm,   indx,   zp,   zp,   zp,   zp,  imp,  imm,  acc,  imm,  ind, abso, abso, abson, /* 6 */
 /* 7 */     rel, indy,  indzp, indy,  zpx,  zpx,  zpx,  zpx,  imp, absy,  imp, absy, absx, absx, absx, absxn, /* 7 */
 /* 8 */     rel, indx,  imm,   indx,   zp,   zp,   zp,   zp,  imp,  imm,  imp,  imm, abso, abso, abso, abson, /* 8 */
 /* 9 */     rel, indy,  indzp, indy,  zpx,  zpx,  zpy,  zpy,  imp, absy,  imp, absy, abso, absx, absx, absyn, /* 9 */
@@ -930,25 +1103,26 @@ static void (*addrtable[256])() = {
 /* E */     imm, indx,  imm,   indx,   zp,   zp,   zp,   zp,  imp,  imm,  imp,  imm, abso, abso, abso, abson, /* E */
 /* F */     rel, indy,  indzp, indy,  zpx,  zpx,  zpx,  zpx,  imp, absy,  imp, absy, absx, absx, absx, absxn  /* F */
 };
+#endif
 
 static void (*optable[256])() = {
 /*        |  0  |  1  |  2  |  3  |  4  |  5  |  6  |  7  |  8  |  9  |  A  |  B  |  C  |  D  |  E  |  F  |      */
-/* 0 */      brk,  ora,  nop,  slo,  trb,  ora,  asl,  slo,  php,  ora,  asl,  nop,  tsb,  ora,  asl,  bbr0, /* 0 */
-/* 1 */      bpl,  ora,  ora,  slo,  tsb,  ora,  asl,  slo,  clc,  ora,  inc,  slo,  trb,  ora,  asl,  bbr1, /* 1 */
-/* 2 */      jsr,  and,  nop,  rla,  bit,  and,  rol,  rla,  plp,  and,  rol,  nop,  bit,  and,  rol,  bbr2, /* 2 */
-/* 3 */      bmi,  and,  and,  rla,  bit,  and,  rol,  rla,  sec,  and,  dec,  rla,  bit,  and,  rol,  bbr3, /* 3 */
-/* 4 */      rti,  eor,  nop,  sre,  nop,  eor,  lsr,  sre,  pha,  eor,  lsr,  nop,  jmp,  eor,  lsr,  bbr4, /* 4 */
-/* 5 */      bvc,  eor,  eor,  sre,  nop,  eor,  lsr,  sre,  cli,  eor,  phy,  sre,  nop,  eor,  lsr,  bbr5, /* 5 */
-/* 6 */      rts,  adc,  nop,  rra,  stz,  adc,  ror,  rra,  pla,  adc,  ror,  nop,  jmp,  adc,  ror,  bbr6, /* 6 */
-/* 7 */      bvs,  adc,  adc,  rra,  stz,  adc,  ror,  rra,  sei,  adc,  ply,  rra,  jmp,  adc,  ror,  bbr7, /* 7 */
-/* 8 */      bra,  sta,  nop,  sax,  sty,  sta,  stx,  sax,  dey,  bit,  txa,  nop,  sty,  sta,  stx,  bbs0, /* 8 */
-/* 9 */      bcc,  sta,  sta,  nop,  sty,  sta,  stx,  sax,  tya,  sta,  txs,  nop,  stz,  sta,  stz,  bbs1, /* 9 */
-/* A */      ldy,  lda,  ldx,  lax,  ldy,  lda,  ldx,  lax,  tay,  lda,  tax,  nop,  ldy,  lda,  ldx,  bbs2, /* A */
-/* B */      bcs,  lda,  lda,  lax,  ldy,  lda,  ldx,  lax,  clv,  lda,  tsx,  lax,  ldy,  lda,  ldx,  bbs3, /* B */
-/* C */      cpy,  cmp,  nop,  dcp,  cpy,  cmp,  dec,  dcp,  iny,  cmp,  dex,  nop,  cpy,  cmp,  dec,  bbs4, /* C */
-/* D */      bne,  cmp,  cmp,  dcp,  nop,  cmp,  dec,  dcp,  cld,  cmp,  phx,  dcp,  nop,  cmp,  dec,  bbs5, /* D */
-/* E */      cpx,  sbc,  nop,  isb,  cpx,  sbc,  inc,  isb,  inx,  sbc,  nop,  sbc,  cpx,  sbc,  inc,  bbs6, /* E */
-/* F */      beq,  sbc,  sbc,  isb,  nop,  sbc,  inc,  isb,  sed,  sbc,  plx,  isb,  nop,  sbc,  inc,  bbs7  /* F */
+/* 0 */      brk,  ora,  nop,  slo,  tsb,  ora,  asl,  rmb0,  php,  ora,  asl,  nop,  tsb,  ora,  asl,  bbr0, /* 0 */
+/* 1 */      bpl,  ora,  ora,  slo,  trb,  ora,  asl,  rmb1,  clc,  ora,  inc,  slo,  trb,  ora,  asl,  bbr1, /* 1 */
+/* 2 */      jsr,  and,  nop,  rla,  bit,  and,  rol,  rmb2,  plp,  and,  rol,  nop,  bit,  and,  rol,  bbr2, /* 2 */
+/* 3 */      bmi,  and,  and,  rla,  bit,  and,  rol,  rmb3,  sec,  and,  dec,  rla,  bit,  and,  rol,  bbr3, /* 3 */
+/* 4 */      rti,  eor,  nop,  sre,  nop,  eor,  lsr,  rmb4,  pha,  eor,  lsr,  nop,  jmp,  eor,  lsr,  bbr4, /* 4 */
+/* 5 */      bvc,  eor,  eor,  sre,  nop,  eor,  lsr,  rmb5,  cli,  eor,  phy,  sre,  nop,  eor,  lsr,  bbr5, /* 5 */
+/* 6 */      rts,  adc,  nop,  rra,  stz,  adc,  ror,  rmb6,  pla,  adc,  ror,  nop,  jmp,  adc,  ror,  bbr6, /* 6 */
+/* 7 */      bvs,  adc,  adc,  rra,  stz,  adc,  ror,  rmb7,  sei,  adc,  ply,  rra,  jmp,  adc,  ror,  bbr7, /* 7 */
+/* 8 */      bra,  sta,  nop,  sax,  sty,  sta,  stx,  smb0,  dey,  bit,  txa,  nop,  sty,  sta,  stx,  bbs0, /* 8 */
+/* 9 */      bcc,  sta,  sta,  nop,  sty,  sta,  stx,  smb1,  tya,  sta,  txs,  nop,  stz,  sta,  stz,  bbs1, /* 9 */
+/* A */      ldy,  lda,  ldx,  lax,  ldy,  lda,  ldx,  smb2,  tay,  lda,  tax,  nop,  ldy,  lda,  ldx,  bbs2, /* A */
+/* B */      bcs,  lda,  lda,  lax,  ldy,  lda,  ldx,  smb3,  clv,  lda,  tsx,  lax,  ldy,  lda,  ldx,  bbs3, /* B */
+/* C */      cpy,  cmp,  nop,  dcp,  cpy,  cmp,  dec,  smb4,  iny,  cmp,  dex,  nop,  cpy,  cmp,  dec,  bbs4, /* C */
+/* D */      bne,  cmp,  cmp,  dcp,  nop,  cmp,  dec,  smb5,  cld,  cmp,  phx,  dcp,  nop,  cmp,  dec,  bbs5, /* D */
+/* E */      cpx,  sbc,  nop,  isb,  cpx,  sbc,  inc,  smb6,  inx,  sbc,  nop,  nop,  cpx,  sbc,  inc,  bbs6, /* E */
+/* F */      beq,  sbc,  sbc,  isb,  nop,  sbc,  inc,  smb7,  sed,  sbc,  plx,  isb,  nop,  sbc,  inc,  bbs7  /* F */
 };
 
 static const uint32_t ticktable[256] = {

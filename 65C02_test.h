@@ -1,3 +1,37 @@
+/********************************************************
+Tests from https://github.com/Klaus2m5/6502_65C02_functional_tests/
+
+;
+; 6 5 C 0 2   E X T E N D E D   O P C O D E S   T E S T
+;
+; Copyright (C) 2013-2017  Klaus Dormann
+;
+; This program is free software: you can redistribute it and/or modify
+; it under the terms of the GNU General Public License as published by
+; the Free Software Foundation, either version 3 of the License, or
+; (at your option) any later version.
+;
+; This program is distributed in the hope that it will be useful,
+; but WITHOUT ANY WARRANTY; without even the implied warranty of
+; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+; GNU General Public License for more details.
+;
+; You should have received a copy of the GNU General Public License
+; along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+; This program is designed to test all additional 65C02 opcodes, addressing
+; modes and functionality not available in the NMOS version of the 6502.
+; The 6502_functional_test is a prerequisite to this test.
+; NMI, IRQ, STP & WAI are covered in the 6502_interrupt_test.
+; 
+; version 04-dec-2017
+; contact info at http://2m5.de or email K@2m5.de
+;
+
+***********************************************/
+
+
 unsigned char __65C02_extended_opcodes_test_bin[] = {
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc3, 0x82, 0x41, 0x00, 0x7f,
