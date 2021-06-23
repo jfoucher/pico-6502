@@ -10,8 +10,11 @@
 #include "pico/time.h"
 #include "hardware/clocks.h"
 #include "hardware/vreg.h"
-
+#define CHIPS_IMPL
 #include "6502.c"
+#include "6522.h"
+
+#define VIA_BASE_ADDRESS 0xFF80
 
 // If this is active, then an overclock will be applied
 #define OVERCLOCK
@@ -29,6 +32,9 @@
 // Variable in which your rom data is stored
 #define ROM_VAR taliforth_bin
 
+#ifdef VIA_BASE_ADDRESS
+m6522_t via;
+#endif
 
 #ifdef TESTING
 #include "65C02_test.h"
@@ -47,11 +53,26 @@ uint16_t old_pc4 = 0;
 #define R_VAR ROM_VAR
 #define R_START ROM_START
 #define R_SIZE ROM_SIZE
+uint32_t old_ticks = 0;
 #endif
 
 uint8_t mem[0x10000];
 absolute_time_t start;
 bool running = true;
+
+uint64_t via_pins = 0;
+
+void via_update() {
+    uint8_t pa = M6522_GET_PA(via_pins);
+    uint8_t pb = M6522_GET_PB(via_pins);
+
+    //
+    // Turn on led when first bit of PB is set
+    gpio_put(PICO_DEFAULT_LED_PIN, pb & 1);
+    if (via_pins & M6522_IRQ) {
+        irq6502();
+    }
+}
 
 uint8_t read6502(uint16_t address) {
     #ifndef TESTING
@@ -61,6 +82,18 @@ uint8_t read6502(uint16_t address) {
            return 0;
         }
         return (uint8_t) ch & 0xFF;
+#ifdef VIA_BASE_ADDRESS
+    } else if ((address ^ VIA_BASE_ADDRESS) < 0xF) {
+        printf("reading from VIA: %04X \n", address);
+        via_pins &= ~(M6522_RS_PINS); // clear RS pins
+        // Set via   RW high   set selected  set RS pins
+        via_pins |= (M6522_RW | M6522_CS1 | ((uint16_t)M6522_RS_PINS & address));
+        via_pins = m6522_tick(&via, via_pins);
+        // Via trigrred IRQ
+        via_update();
+        old_ticks > 0 ? old_ticks-- : 0;
+        return M6522_GET_DATA(via_pins);
+#endif
     }
     #endif
     return mem[address];
@@ -76,6 +109,21 @@ void write6502(uint16_t address, uint8_t value) {
 #else
     if (address == 0xf001) {
         printf("%c", value);
+#ifdef VIA_BASE_ADDRESS
+    } else if ((address ^ VIA_BASE_ADDRESS) < 0xF) {
+        printf("writing to VIA %04X val: %02X\n", address, value);
+        via_pins &= ~(M6522_RW | M6522_RS_PINS | M6522_CS2); // SET RW pin low to write - clear data pins - clear RS pins
+        // Set via selected      set RS pins                 set data pins
+        via_pins |= (M6522_CS1 | ((uint16_t)M6522_RS_PINS & address));
+        M6522_SET_DATA(via_pins, value);
+        printf("RS %04X %04X\n", (uint16_t)M6522_RS_PINS, ((uint16_t)M6522_RS_PINS & address));
+        printf("pins before %016X\n", via_pins);
+        
+        via_pins = m6522_tick(&via, via_pins);
+        printf("pins after %016X\n", via_pins);
+        via_update();
+        old_ticks > 0 ? old_ticks-- : 0;
+#endif
     } else {
         mem[address] = value;
     }
@@ -121,8 +169,23 @@ void callback() {
         // printf("kHz %.2f\n", khz);
     //}
 
+#ifdef VIA_BASE_ADDRESS
+    // one tick for each clock to keep accurate time
+    for (uint16_t i = 0; i < clockticks6502-old_ticks; i++) {
+        via_pins = m6522_tick(&via, via_pins);
+        // Via trigrred IRQ
+        
+        // Todo output PA and PB to GPIO
+    }
+
+    via_update();
+    
+    old_ticks = clockticks6502;
+#endif
     
 }
+
+
 
 int main() {
 #ifdef OVERCLOCK
@@ -146,8 +209,19 @@ int main() {
         mem[i] = R_VAR[i-R_START];
     }
 
+    // Init GPIO
+    // Set pins 0 to 7 as output as well as the LED, the others as input
+    gpio_init_mask(0xFF | (1 << 25));
+    gpio_set_dir_all_bits(0xFF | (1 << 25));
+
     hookexternal(callback);
     reset6502();
+#ifdef VIA_BASE_ADDRESS
+    // setup VIA
+    m6522_init(&via);
+    m6522_reset(&via);
+#endif
+
 #ifdef TESTING
     pc = 0X400;
 #endif
