@@ -140,12 +140,11 @@ int main() {
 
     if (R_START + R_SIZE > 0x10000) {
         printf("Your rom will not fit. Either adjust ROM_START or ROM_SIZE\n");
+        while(1) {}
     }
-    for (int i = R_START; i < R_SIZE; i++) {
-        mem[i] = R_VAR[i];
+    for (int i = R_START; i < R_SIZE + R_START; i++) {
+        mem[i] = R_VAR[i-R_START];
     }
-
-    printf("ROM filled\n");
 
     hookexternal(callback);
     reset6502();

@@ -1,3 +1,19 @@
+
+// Tali Forth License and Copying 
+// Scot W. Stevenson <scot.stevenson@gmail.com>
+// First version: 07. Apr 2014
+// This version:  18. Feb 2018
+
+// Forth has a long tradition of being placed in the public domain. Tali Forth
+// 2 for the 65c02 continues this tradition. Where external code was used, it was
+// also from the public domain, see source code for documentation of individual
+// routines. 
+
+// Tali Forth 2 for the 65c02 is provided on an "as is" basis without any warranty
+// of any kind, including, without limitation, the implied warranties of
+// merchantability and fitness for a particular purpose and their equivalents
+// under the laws of any jurisdiction. Put briefly, use this at your own risk.
+
 unsigned char taliforth_bin[] = {
   0xd8, 0xa9, 0x27, 0x85, 0x10, 0xa9, 0xf0, 0x85, 0x11, 0xa2, 0x21, 0xbd,
   0xc5, 0x80, 0x95, 0x00, 0xca, 0xd0, 0xf8, 0xad, 0xc5, 0x80, 0x85, 0x00,
