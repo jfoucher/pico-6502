@@ -542,6 +542,7 @@ static void _m6522_tick_t1(m6522_t* c) {
 
     /* reload timer from latch? */
     if (_M6522_PIP_TEST(t->pip, M6522_PIP_TIMER_LOAD, 0)) {
+
         t->counter = t->latch;
     }
 }

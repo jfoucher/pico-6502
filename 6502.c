@@ -1154,6 +1154,11 @@ void nmi6502() {
 }
 
 void irq6502() {
+    if (status & FLAG_INTERRUPT) {
+        //printf("prevent IRQ\n");
+        return;
+    }
+    //printf("IRQ\n");
     push16(pc);
     push8(status);
     status |= FLAG_INTERRUPT;
