@@ -1,0 +1,181 @@
+Sections:
+00: "seg4000" (4000-40EA)
+
+
+Source: "helloworld.s"
+                        	     1: PORTB = $7000
+                        	     2: PORTA = $7001
+                        	     3: DDRB =  $7002
+                        	     4: DDRA =  $7003
+                        	     5: 
+                        	     6: E  = %10000000
+                        	     7: RW = %01000000
+                        	     8: RS = %00100000
+                        	     9: 
+                        	    10:   .org $4000
+                        	    11: 
+                        	    12: reset:
+                        	    13:   ;ldx #$ff
+                        	    14:   ;txs
+                        	    15: 
+00:4000 A9FF            	    16:   lda #%11111111 ; Set all pins on port B to output
+00:4002 8D0270          	    17:   sta DDRB
+00:4005 20C240          	    18:   JSR short_delay
+00:4008 A9E0            	    19:   lda #%11100000 ; Set top 3 pins on port A to output
+00:400A 8D0370          	    20:   sta DDRA
+00:400D 20C240          	    21:   JSR short_delay
+                        	    22: 
+00:4010 A938            	    23:   lda #%00111000 ; Set 8-bit mode; 2-line display; 5x8 font
+00:4012 209640          	    24:   jsr lcd_instruction
+00:4015 A90E            	    25:   lda #%00001110 ; Display on; cursor on; blink off
+00:4017 209640          	    26:   jsr lcd_instruction
+00:401A A906            	    27:   lda #%00000110 ; Increment and shift cursor; don't shift display
+00:401C 209640          	    28:   jsr lcd_instruction
+00:401F A901            	    29:   lda #$00000001 ; Clear display
+00:4021 209640          	    30:   jsr lcd_instruction
+                        	    31: 
+00:4024 A200            	    32:   ldx #0
+                        	    33: print:
+00:4026 BD3340          	    34:   lda message,x
+00:4029 F007            	    35:   beq loop
+00:402B 20AC40          	    36:   jsr print_char
+00:402E E8              	    37:   inx
+00:402F 4C2640          	    38:   jmp print
+                        	    39: 
+                        	    40: loop:
+                        	    41:   ;jmp loop
+                        	    42:   ;jmp $FFF0
+00:4032 60              	    43:   RTS
+                        	    44: ;message: .asciiz "Hello, world!"
+00:4033 48656C6C6F2C2077	    45: message: .asciiz "Hello, world!                           Don's 65C02 PICO"
+00:403B 6F726C6421202020
+00:4043 2020202020202020
+00:404B 2020202020202020
+00:4053 2020202020202020
+00:405B 446F6E2773203635
+00:4063 433032205049434F
+00:406B 00
+                        	    46: 
+                        	    47: 
+                        	    48: lcd_wait:
+00:406C 48              	    49:   pha
+00:406D A900            	    50:   lda #%00000000  ; Port B is input
+00:406F 8D0270          	    51:   sta DDRB
+00:4072 DA              	    52:   PHX
+00:4073 5A              	    53:   PHY
+00:4074 20C240          	    54:   JSR short_delay
+00:4077 7A              	    55:   PLY
+00:4078 FA              	    56:   PLX
+                        	    57: lcdbusy:
+00:4079 A940            	    58:   lda #RW
+00:407B 8D0170          	    59:   sta PORTA
+00:407E A9C0            	    60:   lda #(RW | E)
+00:4080 8D0170          	    61:   sta PORTA
+00:4083 AD0070          	    62:   lda PORTB
+00:4086 2980            	    63:   and #%10000000
+00:4088 D0EF            	    64:   bne lcdbusy
+                        	    65: 
+00:408A A940            	    66:   lda #RW
+00:408C 8D0170          	    67:   sta PORTA
+00:408F A9FF            	    68:   lda #%11111111  ; Port B is output
+00:4091 8D0270          	    69:   sta DDRB
+00:4094 68              	    70:   pla
+00:4095 60              	    71:   rts
+                        	    72: 
+                        	    73: lcd_instruction:
+00:4096 206C40          	    74:   jsr lcd_wait
+00:4099 8D0070          	    75:   sta PORTB
+00:409C A900            	    76:   lda #0         ; Clear RS/RW/E bits
+00:409E 8D0170          	    77:   sta PORTA
+00:40A1 A980            	    78:   lda #E         ; Set E bit to send instruction
+00:40A3 8D0170          	    79:   sta PORTA
+00:40A6 A900            	    80:   lda #0         ; Clear RS/RW/E bits
+00:40A8 8D0170          	    81:   sta PORTA
+00:40AB 60              	    82:   rts
+                        	    83: 
+                        	    84: print_char:
+00:40AC 206C40          	    85:   jsr lcd_wait
+00:40AF 8D0070          	    86:   sta PORTB
+00:40B2 A920            	    87:   lda #RS         ; Set RS; Clear RW/E bits
+00:40B4 8D0170          	    88:   sta PORTA
+00:40B7 A9A0            	    89:   lda #(RS | E)   ; Set E bit to send instruction
+00:40B9 8D0170          	    90:   sta PORTA
+00:40BC A920            	    91:   lda #RS         ; Clear E bits
+00:40BE 8D0170          	    92:   sta PORTA
+00:40C1 60              	    93:   rts
+                        	    94: 
+                        	    95: short_delay
+00:40C2 A280            	    96:   ldx #128
+                        	    97: lp
+00:40C4 CA              	    98:   dex
+00:40C5 D0FD            	    99:   bne lp
+00:40C7 60              	   100:   rts
+                        	   101:   
+                        	   102: 
+                        	   103: delay
+00:40C8 A200            	   104:   ldx #0
+00:40CA A000            	   105:   ldy #0
+                        	   106: .loop
+00:40CC 88              	   107:   dey
+00:40CD D0FD            	   108:   bne .loop
+00:40CF CA              	   109:   dex
+00:40D0 D0FA            	   110:   bne .loop
+00:40D2 60              	   111:   rts
+                        	   112: 
+                        	   113: longdelay
+00:40D3 20DC40          	   114:   jsr mediumdelay
+00:40D6 20DC40          	   115:   jsr mediumdelay
+00:40D9 20DC40          	   116:   jsr mediumdelay
+                        	   117: mediumdelay
+00:40DC 20C840          	   118:   jsr delay
+00:40DF 20C840          	   119:   jsr delay
+00:40E2 20C840          	   120:   jsr delay
+00:40E5 4CC840          	   121:   jmp delay
+                        	   122: 
+00:40E8 0040            	   123:   .word reset
+                        	   124: 
+
+
+Symbols by name:
+DDRA                             E:7003
+DDRB                             E:7002
+E                                E:0080
+PORTA                            E:7001
+PORTB                            E:7000
+RS                               E:0020
+RW                               E:0040
+delay                            A:40C8
+lcd_instruction                  A:4096
+lcd_wait                         A:406C
+lcdbusy                          A:4079
+longdelay                        A:40D3
+loop                             A:4032
+lp                               A:40C4
+mediumdelay                      A:40DC
+message                          A:4033
+print                            A:4026
+print_char                       A:40AC
+reset                            A:4000
+short_delay                      A:40C2
+
+Symbols by value:
+0020 RS
+0040 RW
+0080 E
+4000 reset
+4026 print
+4032 loop
+4033 message
+406C lcd_wait
+4079 lcdbusy
+4096 lcd_instruction
+40AC print_char
+40C2 short_delay
+40C4 lp
+40C8 delay
+40D3 longdelay
+40DC mediumdelay
+7000 PORTB
+7001 PORTA
+7002 DDRB
+7003 DDRA

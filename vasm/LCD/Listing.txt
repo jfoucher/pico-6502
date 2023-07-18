@@ -1,0 +1,237 @@
+Sections:
+00: "seg4000" (4000-40BB)
+
+
+Source: "lcd.s"
+                        	     1: ; Constants
+                        	     2: LCD_ADDRESS = $27        ; I2C address of the LCD module
+                        	     3: 
+                        	     4: ; Register addresses of 65C22 VIA
+                        	     5: VIA_DDRA    = $7003      ; Data Direction Register A
+                        	     6: VIA_PORTA   = $7001      ; Port A (for control signals and data signals)
+                        	     7: 
+                        	     8: ; I2C control signals
+                        	     9: I2C_START   = $08        ; I2C Start condition
+                        	    10: I2C_STOP    = $10        ; I2C Stop condition
+                        	    11: I2C_ACK     = $20        ; I2C Acknowledge
+                        	    12: I2C_READ    = $40        ; I2C Read operation
+                        	    13: I2C_WRITE   = $00        ; I2C Write operation
+                        	    14: 
+                        	    15: ; VIA control signals for I2C
+                        	    16: VIA_SCL     = $01        ; VIA Port A - Serial Clock (SCK)
+                        	    17: VIA_SDA     = $00        ; VIA Port A - Serial Data (SDA)
+                        	    18: 
+                        	    19:   .org $4000
+00:4000 4C9740          	    20:   JMP Main
+                        	    21: 
+                        	    22: ; Function to send an I2C start condition
+                        	    23: SendI2CStart:
+00:4003 AD0170          	    24:     LDA VIA_PORTA         ; Get the current value of Port A
+00:4006 29FC            	    25:     AND #$FC              ; Clear the lower two bits (SDA and SCL)
+00:4008 0908            	    26:     ORA #I2C_START        ; Set the Start bit
+00:400A 8D0170          	    27:     STA VIA_PORTA         ; Send the updated value to Port A
+00:400D 60              	    28:     RTS
+                        	    29: 
+                        	    30: ; Function to send an I2C stop condition
+                        	    31: SendI2CStop:
+00:400E AD0170          	    32:     LDA VIA_PORTA         ; Get the current value of Port A
+00:4011 29FC            	    33:     AND #$FC              ; Clear the lower two bits (SDA and SCL)
+00:4013 0910            	    34:     ORA #I2C_STOP         ; Set the Stop bit
+00:4015 8D0170          	    35:     STA VIA_PORTA         ; Send the updated value to Port A
+00:4018 60              	    36:     RTS
+                        	    37: 
+                        	    38: ; Function to send an I2C acknowledge
+                        	    39: SendI2CAck:
+00:4019 AD0170          	    40:     LDA VIA_PORTA         ; Get the current value of Port A
+00:401C 29FC            	    41:     AND #$FC              ; Clear the lower two bits (SDA and SCL)
+00:401E 0920            	    42:     ORA #I2C_ACK          ; Set the Acknowledge bit
+00:4020 8D0170          	    43:     STA VIA_PORTA         ; Send the updated value to Port A
+00:4023 60              	    44:     RTS
+                        	    45: 
+                        	    46: ; Function to send an I2C byte
+                        	    47: SendI2CByte:
+00:4024 A208            	    48:     LDX #8                ; Loop counter
+                        	    49: Loop1:
+00:4026 AD0170          	    50:     LDA VIA_PORTA         ; Get the current value of Port A
+00:4029 29FC            	    51:     AND #$FC              ; Clear the lower two bits (SDA and SCL)
+                        	    52: 
+00:402B 4A              	    53:     LSR                  ; Shift the data bit into the carry
+00:402C 9002            	    54:     BCC BitLow            ; If carry is clear, set SDA low
+                        	    55: 
+                        	    56: BitHigh:
+00:402E 0900            	    57:     ORA #VIA_SDA          ; Set SDA high
+                        	    58:     BitLow:
+00:4030 8D0170          	    59:     STA VIA_PORTA         ; Send the updated value to Port A
+                        	    60: 
+00:4033 AD0170          	    61:     LDA VIA_PORTA         ; Get the current value of Port A
+00:4036 29FE            	    62:     AND #$FE              ; Clear the lower bit (SDA)
+                        	    63: 
+00:4038 6A              	    64:     ROR                  ; Rotate the carry into the data bit
+00:4039 CA              	    65:     DEX                  ; Decrement the loop counter
+00:403A D0EA            	    66:     BNE Loop1             ; If loop counter is not zero, continue
+                        	    67: 
+                        	    68:     ; Send an I2C acknowledge
+00:403C 201940          	    69:     JSR SendI2CAck
+00:403F 60              	    70:     RTS
+                        	    71: 
+                        	    72: ; Function to send an I2C command to the LCD
+                        	    73: SendLCDCommand:
+00:4040 AD0170          	    74:     LDA VIA_PORTA         ; Get the current value of Port A
+00:4043 29FE            	    75:     AND #$FE              ; Set RS (Register Select) low (Command mode)
+00:4045 8D0170          	    76:     STA VIA_PORTA         ; Send the updated value to Port A
+                        	    77: 
+                        	    78:     ; Send the I2C Start condition
+00:4048 200340          	    79:     JSR SendI2CStart
+                        	    80: 
+                        	    81:     ; Send the I2C address and write operation
+00:404B A927            	    82:     LDA #LCD_ADDRESS      ; Load the LCD I2C address
+00:404D 202440          	    83:     JSR SendI2CByte
+                        	    84: 
+                        	    85:     ; Send the command byte in A
+00:4050 202440          	    86:     JSR SendI2CByte
+                        	    87: 
+                        	    88:     ; Send the I2C Stop condition
+00:4053 200E40          	    89:     JSR SendI2CStop
+                        	    90: 
+                        	    91:     ; Delay for command execution
+00:4056 A2FF            	    92:     LDX #$FF
+                        	    93: DelayLoop:
+00:4058 CA              	    94:     DEX
+00:4059 D0FD            	    95:     BNE DelayLoop
+                        	    96: 
+00:405B 60              	    97:     RTS
+                        	    98: 
+                        	    99: ; Function to send data to the LCD
+                        	   100: SendLCDData:
+00:405C AD0170          	   101:     LDA VIA_PORTA         ; Get the current value of Port A
+00:405F 0901            	   102:     ORA #$01              ; Set RS (Register Select) high (Data mode)
+00:4061 8D0170          	   103:     STA VIA_PORTA         ; Send the updated value to Port A
+                        	   104: 
+                        	   105:     ; Send the I2C Start condition
+00:4064 200340          	   106:     JSR SendI2CStart
+                        	   107: 
+                        	   108:     ; Send the I2C address and write operation
+00:4067 A927            	   109:     LDA #LCD_ADDRESS      ; Load the LCD I2C address
+00:4069 202440          	   110:     JSR SendI2CByte
+                        	   111: 
+                        	   112:     ; Send the data byte in A
+00:406C 202440          	   113:     JSR SendI2CByte
+                        	   114: 
+                        	   115:     ; Send the I2C Stop condition
+00:406F 200E40          	   116:     JSR SendI2CStop
+                        	   117: 
+                        	   118:     ; Delay for data write
+00:4072 A2FF            	   119:     LDX #$FF
+                        	   120: DelayLoopData:
+00:4074 CA              	   121:     DEX
+00:4075 D0FD            	   122:     BNE DelayLoopData
+                        	   123: 
+00:4077 60              	   124:     RTS
+                        	   125: 
+                        	   126: ; Initialization routine
+                        	   127: Init:
+                        	   128:     ; Set Port A as output (for control signals and data signals)
+00:4078 A9FF            	   129:     LDA #$FF              ; Set all bits high
+00:407A 8D0370          	   130:     STA VIA_DDRA
+                        	   131: 
+                        	   132:     ; Set the initial values for Port A
+00:407D A9FF            	   133:     LDA #$FF              ; Set all bits high
+00:407F 8D0170          	   134:     STA VIA_PORTA         ; No I2C operations in progress
+                        	   135:    
+                        	   136: 
+                        	   137:     ; Set up the LCD (refer to the LCD datasheet for command details)
+00:4082 A938            	   138:     LDA #%00111000      ; 8-bit mode, 2 lines, 5x8 font
+00:4084 204040          	   139:     JSR SendLCDCommand  ; Send the command
+                        	   140: 
+00:4087 A90C            	   141:     LDA #%00001100      ; Display on, cursor off, blink off
+00:4089 204040          	   142:     JSR SendLCDCommand  ; Send the command
+                        	   143: 
+00:408C A901            	   144:     LDA #%00000001      ; Clear display
+00:408E 204040          	   145:     JSR SendLCDCommand  ; Send the command
+                        	   146: 
+00:4091 A906            	   147:     LDA #%00000110      ; Entry mode set: increment cursor, no shift
+00:4093 204040          	   148:     JSR SendLCDCommand  ; Send the command
+                        	   149: 
+00:4096 60              	   150:     RTS
+                        	   151: 
+                        	   152: ; Main program
+                        	   153: Main:
+00:4097 207840          	   154:     JSR Init            ; Initialize the LCD
+                        	   155: 
+                        	   156:     ; Send "Hello, World" message to LCD
+00:409A A90D            	   157:     LDA #13             ; Length of the string
+00:409C 8500            	   158:     STA $00             ; Store the length
+                        	   159: 
+00:409E A200            	   160:     LDX #0              ; Initialize index
+                        	   161: 
+                        	   162: Loop:
+00:40A0 BDAD40          	   163:     LDA Message,X       ; Load the character from the message
+00:40A3 F007            	   164:     BEQ EndLoop         ; If it's the null terminator, exit the loop
+                        	   165: 
+00:40A5 205C40          	   166:     JSR SendLCDData     ; Send the character to the LCD
+                        	   167: 
+00:40A8 E8              	   168:     INX                 ; Increment index
+00:40A9 4CA040          	   169:     JMP Loop            ; Continue the loop
+                        	   170: 
+                        	   171: EndLoop:
+                        	   172:     ; End program
+                        	   173:     ;JMP $FFFF           ; Jump to reset vector
+00:40AC 60              	   174:     RTS
+                        	   175: 
+                        	   176: ; Message data
+00:40AD 48656C6C6F2C2057	   177: Message   DB 'Hello, World!', 0
+00:40B5 6F726C6421
+00:40BA 00
+                        	   178: 
+                        	   179: 
+
+
+Symbols by name:
+BitHigh                          A:402E
+BitLow                           A:4030
+DelayLoop                        A:4058
+DelayLoopData                    A:4074
+EndLoop                          A:40AC
+I2C_ACK                          E:0020
+I2C_START                        E:0008
+I2C_STOP                         E:0010
+Init                             A:4078
+LCD_ADDRESS                      E:0027
+Loop                             A:40A0
+Loop1                            A:4026
+Main                             A:4097
+Message                          A:40AD
+SendI2CAck                       A:4019
+SendI2CByte                      A:4024
+SendI2CStart                     A:4003
+SendI2CStop                      A:400E
+SendLCDCommand                   A:4040
+SendLCDData                      A:405C
+VIA_DDRA                         E:7003
+VIA_PORTA                        E:7001
+VIA_SDA                          E:0000
+
+Symbols by value:
+0000 VIA_SDA
+0008 I2C_START
+0010 I2C_STOP
+0020 I2C_ACK
+0027 LCD_ADDRESS
+4003 SendI2CStart
+400E SendI2CStop
+4019 SendI2CAck
+4024 SendI2CByte
+4026 Loop1
+402E BitHigh
+4030 BitLow
+4040 SendLCDCommand
+4058 DelayLoop
+405C SendLCDData
+4074 DelayLoopData
+4078 Init
+4097 Main
+40A0 Loop
+40AC EndLoop
+40AD Message
+7001 VIA_PORTA
+7003 VIA_DDRA

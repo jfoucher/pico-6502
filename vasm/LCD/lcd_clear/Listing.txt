@@ -1,0 +1,95 @@
+Sections:
+00: "seg2000" (2000-205C)
+
+
+Source: "clear_lcd.s"
+                        	     1: PORTB = $7000
+                        	     2: PORTA = $7001
+                        	     3: DDRB =  $7002
+                        	     4: DDRA =  $7003
+                        	     5: 
+                        	     6: E  = %10000000
+                        	     7: RW = %01000000
+                        	     8: RS = %00100000
+                        	     9: 
+                        	    10:   .org $2000
+                        	    11: 
+                        	    12: reset:
+                        	    13:   ;ldx #$ff
+                        	    14:   ;txs
+                        	    15: 
+00:2000 A9FF            	    16:   lda #%11111111 ; Set all pins on port B to output
+00:2002 8D0270          	    17:   sta DDRB
+00:2005 A9E0            	    18:   lda #%11100000 ; Set top 3 pins on port A to output
+00:2007 8D0370          	    19:   sta DDRA
+                        	    20: 
+00:200A A938            	    21:   lda #%00111000 ; Set 8-bit mode; 2-line display; 5x8 font
+00:200C 204420          	    22:   jsr lcd_instruction
+00:200F A90E            	    23:   lda #%00001110 ; Display on; cursor on; blink off
+00:2011 204420          	    24:   jsr lcd_instruction
+00:2014 A906            	    25:   lda #%00000110 ; Increment and shift cursor; don't shift display
+00:2016 204420          	    26:   jsr lcd_instruction
+                        	    27: 
+00:2019 A901            	    28:   lda #%00000001 ; Clear display
+00:201B 204420          	    29:   jsr lcd_instruction
+                        	    30: 
+00:201E 4CF0FF          	    31:   jmp $FFF0
+                        	    32: 
+                        	    33: lcd_wait:
+00:2021 48              	    34:   pha
+00:2022 A900            	    35:   lda #%00000000  ; Port B is input
+00:2024 8D0270          	    36:   sta DDRB
+                        	    37: lcdbusy:
+00:2027 A940            	    38:   lda #RW
+00:2029 8D0170          	    39:   sta PORTA
+00:202C A9C0            	    40:   lda #(RW | E)
+00:202E 8D0170          	    41:   sta PORTA
+00:2031 AD0070          	    42:   lda PORTB
+00:2034 2980            	    43:   and #%10000000
+00:2036 D0EF            	    44:   bne lcdbusy
+                        	    45: 
+00:2038 A940            	    46:   lda #RW
+00:203A 8D0170          	    47:   sta PORTA
+00:203D A9FF            	    48:   lda #%11111111  ; Port B is output
+00:203F 8D0270          	    49:   sta DDRB
+00:2042 68              	    50:   pla
+00:2043 60              	    51:   rts
+                        	    52: 
+                        	    53: lcd_instruction:
+00:2044 202120          	    54:   jsr lcd_wait
+00:2047 8D0070          	    55:   sta PORTB
+00:204A A900            	    56:   lda #0         ; Clear RS/RW/E bits
+00:204C 8D0170          	    57:   sta PORTA
+00:204F A980            	    58:   lda #E         ; Set E bit to send instruction
+00:2051 8D0170          	    59:   sta PORTA
+00:2054 A900            	    60:   lda #0         ; Clear RS/RW/E bits
+00:2056 8D0170          	    61:   sta PORTA
+00:2059 60              	    62:   rts
+                        	    63: 
+00:205A 0020            	    64:   .word reset
+                        	    65: 
+
+
+Symbols by name:
+DDRA                             E:7003
+DDRB                             E:7002
+E                                E:0080
+PORTA                            E:7001
+PORTB                            E:7000
+RW                               E:0040
+lcd_instruction                  A:2044
+lcd_wait                         A:2021
+lcdbusy                          A:2027
+reset                            A:2000
+
+Symbols by value:
+0040 RW
+0080 E
+2000 reset
+2021 lcd_wait
+2027 lcdbusy
+2044 lcd_instruction
+7000 PORTB
+7001 PORTA
+7002 DDRB
+7003 DDRA

@@ -1,0 +1,1581 @@
+Sections:
+00: "seg1000" (1000-16E5)
+
+
+Source: "dirlist.s"
+                        	     1:   .org $1000
+                        	     2: 
+                        	     3:   .include "hwconfig.s"
+
+Source: "hwconfig.s"
+                        	     1: PORTB = $7000
+                        	     2: PORTA = $7001
+                        	     3: DDRB = $7002
+                        	     4: DDRA = $7003
+                        	     5: 
+                        	     6: LCD_E  = %10000000
+                        	     7: LCD_RW = %01000000
+                        	     8: LCD_RS = %00100000
+                        	     9: 
+                        	    10: SD_CS   = %00010000
+                        	    11: SD_SCK  = %00001000
+                        	    12: SD_MOSI = %00000100
+                        	    13: SD_MISO = %00000010
+                        	    14: 
+                        	    15: PORTA_OUTPUTPINS = LCD_E | LCD_RW | LCD_RS | SD_CS | SD_SCK | SD_MOSI
+                        	    16: 
+                        	    17: via_init:
+00:1000 A9FF            	    18:   lda #%11111111          ; Set all pins on port B to output
+00:1002 8D0270          	    19:   sta DDRB
+00:1005 A9FC            	    20:   lda #PORTA_OUTPUTPINS   ; Set various pins on port A to output
+00:1007 8D0370          	    21:   sta DDRA
+00:100A 60              	    22:   rts
+                        	    23: 
+                        	    24: 
+
+Source: "dirlist.s"
+                        	     4:   .include "libsd.s"
+
+Source: "libsd.s"
+                        	     1: ; SD card interface module
+                        	     2: ;
+                        	     3: ; Requires zero-page variable storage:
+                        	     4: ;   zp_sd_address - 2 bytes
+                        	     5: ;   zp_sd_currentsector - 4 bytes
+                        	     6: 
+                        	     7: 
+                        	     8: sd_init:
+                        	     9:   ; Let the SD card boot up, by pumping the clock with SD CS disabled
+                        	    10: 
+                        	    11:   ; We need to apply around 80 clock pulses with CS and MOSI high.
+                        	    12:   ; Normally MOSI doesn't matter when CS is high, but the card is
+                        	    13:   ; not yet is SPI mode, and in this non-SPI state it does care.
+                        	    14: 
+00:100B A914            	    15:   lda #SD_CS | SD_MOSI
+00:100D A2A0            	    16:   ldx #160               ; toggle the clock 160 times, so 80 low-high transitions
+                        	    17: .preinitloop:
+00:100F 4908            	    18:   eor #SD_SCK
+00:1011 8D0170          	    19:   sta PORTA
+00:1014 CA              	    20:   dex
+00:1015 D0F8            	    21:   bne .preinitloop
+                        	    22:   
+                        	    23: 
+                        	    24: .cmd0 ; GO_IDLE_STATE - resets card to idle state, and SPI mode
+00:1017 A97E            	    25:   lda #<sd_cmd0_bytes
+00:1019 8540            	    26:   sta zp_sd_address
+00:101B A910            	    27:   lda #>sd_cmd0_bytes
+00:101D 8541            	    28:   sta zp_sd_address+1
+                        	    29: 
+00:101F 20D010          	    30:   jsr sd_sendcommand
+                        	    31: 
+                        	    32:   ; Expect status response $01 (not initialized)
+00:1022 C901            	    33:   cmp #$01
+00:1024 D050            	    34:   bne .initfailed
+                        	    35: 
+                        	    36: .cmd8 ; SEND_IF_COND - tell the card how we want it to operate (3.3V, etc)
+00:1026 A984            	    37:   lda #<sd_cmd8_bytes
+00:1028 8540            	    38:   sta zp_sd_address
+00:102A A910            	    39:   lda #>sd_cmd8_bytes
+00:102C 8541            	    40:   sta zp_sd_address+1
+                        	    41: 
+00:102E 20D010          	    42:   jsr sd_sendcommand
+                        	    43: 
+                        	    44:   ; Expect status response $01 (not initialized)
+00:1031 C901            	    45:   cmp #$01
+00:1033 D041            	    46:   bne .initfailed
+                        	    47: 
+                        	    48:   ; Read 32-bit return value, but ignore it
+00:1035 209610          	    49:   jsr sd_readbyte
+00:1038 209610          	    50:   jsr sd_readbyte
+00:103B 209610          	    51:   jsr sd_readbyte
+00:103E 209610          	    52:   jsr sd_readbyte
+                        	    53: 
+                        	    54: .cmd55 ; APP_CMD - required prefix for ACMD commands
+00:1041 A98A            	    55:   lda #<sd_cmd55_bytes
+00:1043 8540            	    56:   sta zp_sd_address
+00:1045 A910            	    57:   lda #>sd_cmd55_bytes
+00:1047 8541            	    58:   sta zp_sd_address+1
+                        	    59: 
+00:1049 20D010          	    60:   jsr sd_sendcommand
+                        	    61: 
+                        	    62:   ; Expect status response $01 (not initialized)
+00:104C C901            	    63:   cmp #$01
+00:104E D026            	    64:   bne .initfailed
+                        	    65: 
+                        	    66: .cmd41 ; APP_SEND_OP_COND - send operating conditions, initialize card
+00:1050 A990            	    67:   lda #<sd_cmd41_bytes
+00:1052 8540            	    68:   sta zp_sd_address
+00:1054 A910            	    69:   lda #>sd_cmd41_bytes
+00:1056 8541            	    70:   sta zp_sd_address+1
+                        	    71: 
+00:1058 20D010          	    72:   jsr sd_sendcommand
+                        	    73: 
+                        	    74:   ; Status response $00 means initialised
+00:105B C900            	    75:   cmp #$00
+00:105D F011            	    76:   beq .initialized
+                        	    77: 
+                        	    78:   ; Otherwise expect status response $01 (not initialized)
+00:105F C901            	    79:   cmp #$01
+00:1061 D013            	    80:   bne .initfailed
+                        	    81: 
+                        	    82:   ; Not initialized yet, so wait a while then try again.
+                        	    83:   ; This retry is important, to give the card time to initialize.
+                        	    84: 
+00:1063 A200            	    85:   ldx #0
+00:1065 A000            	    86:   ldy #0
+                        	    87: .delayloop
+00:1067 88              	    88:   dey
+00:1068 D0FD            	    89:   bne .delayloop
+00:106A CA              	    90:   dex
+00:106B D0FA            	    91:   bne .delayloop
+                        	    92: 
+00:106D 4C4110          	    93:   jmp .cmd55
+                        	    94: 
+                        	    95: 
+                        	    96: .initialized
+00:1070 A959            	    97:   lda #'Y'
+00:1072 20BB14          	    98:   jsr print_char
+00:1075 60              	    99:   rts
+                        	   100: 
+                        	   101: .initfailed
+00:1076 A958            	   102:   lda #'X'
+00:1078 20BB14          	   103:   jsr print_char
+                        	   104: .loop
+00:107B 4C7B10          	   105:   jmp .loop
+                        	   106: 
+                        	   107: 
+                        	   108: sd_cmd0_bytes
+00:107E 40              	   109:   .byte $40, $00, $00, $00, $00, $95
+00:107F 00
+00:1080 00
+00:1081 00
+00:1082 00
+00:1083 95
+                        	   110: sd_cmd8_bytes
+00:1084 48              	   111:   .byte $48, $00, $00, $01, $aa, $87
+00:1085 00
+00:1086 00
+00:1087 01
+00:1088 AA
+00:1089 87
+                        	   112: sd_cmd55_bytes
+00:108A 77              	   113:   .byte $77, $00, $00, $00, $00, $01
+00:108B 00
+00:108C 00
+00:108D 00
+00:108E 00
+00:108F 01
+                        	   114: sd_cmd41_bytes
+00:1090 69              	   115:   .byte $69, $40, $00, $00, $00, $01
+00:1091 40
+00:1092 00
+00:1093 00
+00:1094 00
+00:1095 01
+                        	   116: 
+                        	   117: 
+                        	   118: 
+                        	   119: sd_readbyte:
+                        	   120:   ; Enable the card and tick the clock 8 times with MOSI high, 
+                        	   121:   ; capturing bits from MISO and returning them
+                        	   122: 
+00:1096 A2FE            	   123:   ldx #$fe    ; Preloaded with seven ones and a zero, so we stop after eight bits
+                        	   124: 
+                        	   125: .loop:
+                        	   126: 
+00:1098 A904            	   127:   lda #SD_MOSI                ; enable card (CS low), set MOSI (resting state), SCK low
+00:109A 8D0170          	   128:   sta PORTA
+                        	   129: 
+00:109D A90C            	   130:   lda #SD_MOSI | SD_SCK       ; toggle the clock high
+00:109F 8D0170          	   131:   sta PORTA
+                        	   132: 
+00:10A2 AD0170          	   133:   lda PORTA                   ; read next bit
+00:10A5 2902            	   134:   and #SD_MISO
+                        	   135: 
+00:10A7 18              	   136:   clc                         ; default to clearing the bottom bit
+00:10A8 F001            	   137:   beq .bitnotset              ; unless MISO was set
+00:10AA 38              	   138:   sec                         ; in which case get ready to set the bottom bit
+                        	   139: .bitnotset:
+                        	   140: 
+00:10AB 8A              	   141:   txa                         ; transfer partial result from X
+00:10AC 2A              	   142:   rol                         ; rotate carry bit into read result, and loop bit into carry
+00:10AD AA              	   143:   tax                         ; save partial result back to X
+                        	   144:   
+00:10AE B0E8            	   145:   bcs .loop                   ; loop if we need to read more bits
+                        	   146: 
+00:10B0 60              	   147:   rts
+                        	   148: 
+                        	   149: 
+                        	   150: sd_writebyte:
+                        	   151:   ; Tick the clock 8 times with descending bits on MOSI
+                        	   152:   ; SD communication is mostly half-duplex so we ignore anything it sends back here
+                        	   153: 
+00:10B1 A208            	   154:   ldx #8                      ; send 8 bits
+                        	   155: 
+                        	   156: .loop:
+00:10B3 0A              	   157:   asl                         ; shift next bit into carry
+00:10B4 A8              	   158:   tay                         ; save remaining bits for later
+                        	   159: 
+00:10B5 A900            	   160:   lda #0
+00:10B7 9002            	   161:   bcc .sendbit                ; if carry clear, don't set MOSI for this bit
+00:10B9 0904            	   162:   ora #SD_MOSI
+                        	   163: 
+                        	   164: .sendbit:
+00:10BB 8D0170          	   165:   sta PORTA                   ; set MOSI (or not) first with SCK low
+00:10BE 4908            	   166:   eor #SD_SCK
+00:10C0 8D0170          	   167:   sta PORTA                   ; raise SCK keeping MOSI the same, to send the bit
+                        	   168: 
+00:10C3 98              	   169:   tya                         ; restore remaining bits to send
+                        	   170: 
+00:10C4 CA              	   171:   dex
+00:10C5 D0EC            	   172:   bne .loop                   ; loop if there are more bits to send
+                        	   173: 
+00:10C7 60              	   174:   rts
+                        	   175: 
+                        	   176: 
+                        	   177: sd_waitresult:
+                        	   178:   ; Wait for the SD card to return something other than $ff
+00:10C8 209610          	   179:   jsr sd_readbyte
+00:10CB C9FF            	   180:   cmp #$ff
+00:10CD F0F9            	   181:   beq sd_waitresult
+00:10CF 60              	   182:   rts
+                        	   183: 
+                        	   184: 
+                        	   185: sd_sendcommand:
+                        	   186:   ; Debug print which command is being executed
+00:10D0 20A114          	   187:   jsr lcd_cleardisplay
+                        	   188: 
+00:10D3 A963            	   189:   lda #'c'
+00:10D5 20BB14          	   190:   jsr print_char
+00:10D8 A200            	   191:   ldx #0
+00:10DA A140            	   192:   lda (zp_sd_address,x)
+00:10DC 20D114          	   193:   jsr print_hex
+                        	   194: 
+00:10DF A904            	   195:   lda #SD_MOSI           ; pull CS low to begin command
+00:10E1 8D0170          	   196:   sta PORTA
+                        	   197: 
+00:10E4 A000            	   198:   ldy #0
+00:10E6 B140            	   199:   lda (zp_sd_address),y    ; command byte
+00:10E8 20B110          	   200:   jsr sd_writebyte
+00:10EB A001            	   201:   ldy #1
+00:10ED B140            	   202:   lda (zp_sd_address),y    ; data 1
+00:10EF 20B110          	   203:   jsr sd_writebyte
+00:10F2 A002            	   204:   ldy #2
+00:10F4 B140            	   205:   lda (zp_sd_address),y    ; data 2
+00:10F6 20B110          	   206:   jsr sd_writebyte
+00:10F9 A003            	   207:   ldy #3
+00:10FB B140            	   208:   lda (zp_sd_address),y    ; data 3
+00:10FD 20B110          	   209:   jsr sd_writebyte
+00:1100 A004            	   210:   ldy #4
+00:1102 B140            	   211:   lda (zp_sd_address),y    ; data 4
+00:1104 20B110          	   212:   jsr sd_writebyte
+00:1107 A005            	   213:   ldy #5
+00:1109 B140            	   214:   lda (zp_sd_address),y    ; crc
+00:110B 20B110          	   215:   jsr sd_writebyte
+                        	   216: 
+00:110E 20C810          	   217:   jsr sd_waitresult
+00:1111 48              	   218:   pha
+                        	   219: 
+                        	   220:   ; Debug print the result code
+00:1112 20D114          	   221:   jsr print_hex
+                        	   222: 
+                        	   223:   ; End command
+00:1115 A914            	   224:   lda #SD_CS | SD_MOSI   ; set CS high again
+00:1117 8D0170          	   225:   sta PORTA
+                        	   226: 
+00:111A 68              	   227:   pla   ; restore result code
+00:111B 60              	   228:   rts
+                        	   229: 
+                        	   230: 
+                        	   231: sd_readsector:
+                        	   232:   ; Read a sector from the SD card.  A sector is 512 bytes.
+                        	   233:   ;
+                        	   234:   ; Parameters:
+                        	   235:   ;    zp_sd_currentsector   32-bit sector number
+                        	   236:   ;    zp_sd_address     address of buffer to receive data
+                        	   237:   
+00:111C A904            	   238:   lda #SD_MOSI
+00:111E 8D0170          	   239:   sta PORTA
+                        	   240: 
+                        	   241:   ; Command 17, arg is sector number, crc not checked
+00:1121 A951            	   242:   lda #$51                    ; CMD17 - READ_SINGLE_BLOCK
+00:1123 20B110          	   243:   jsr sd_writebyte
+00:1126 A545            	   244:   lda zp_sd_currentsector+3   ; sector 24:31
+00:1128 20B110          	   245:   jsr sd_writebyte
+00:112B A544            	   246:   lda zp_sd_currentsector+2   ; sector 16:23
+00:112D 20B110          	   247:   jsr sd_writebyte
+00:1130 A543            	   248:   lda zp_sd_currentsector+1   ; sector 8:15
+00:1132 20B110          	   249:   jsr sd_writebyte
+00:1135 A542            	   250:   lda zp_sd_currentsector     ; sector 0:7
+00:1137 20B110          	   251:   jsr sd_writebyte
+00:113A A901            	   252:   lda #$01                    ; crc (not checked)
+00:113C 20B110          	   253:   jsr sd_writebyte
+                        	   254: 
+00:113F 20C810          	   255:   jsr sd_waitresult
+00:1142 C900            	   256:   cmp #$00
+00:1144 D017            	   257:   bne .fail
+                        	   258: 
+                        	   259:   ; wait for data
+00:1146 20C810          	   260:   jsr sd_waitresult
+00:1149 C9FE            	   261:   cmp #$fe
+00:114B D010            	   262:   bne .fail
+                        	   263: 
+                        	   264:   ; Need to read 512 bytes - two pages of 256 bytes each
+00:114D 206F11          	   265:   jsr .readpage
+00:1150 E641            	   266:   inc zp_sd_address+1
+00:1152 206F11          	   267:   jsr .readpage
+00:1155 C641            	   268:   dec zp_sd_address+1
+                        	   269: 
+                        	   270:   ; End command
+00:1157 A914            	   271:   lda #SD_CS | SD_MOSI
+00:1159 8D0170          	   272:   sta PORTA
+                        	   273: 
+00:115C 60              	   274:   rts
+                        	   275: 
+                        	   276: 
+                        	   277: .fail
+00:115D A973            	   278:   lda #'s'
+00:115F 20BB14          	   279:   jsr print_char
+00:1162 A93A            	   280:   lda #':'
+00:1164 20BB14          	   281:   jsr print_char
+00:1167 A966            	   282:   lda #'f'
+00:1169 20BB14          	   283:   jsr print_char
+                        	   284: .failloop
+00:116C 4C6C11          	   285:   jmp .failloop
+                        	   286: 
+                        	   287: 
+                        	   288: .readpage
+                        	   289:   ; Read 256 bytes to the address at zp_sd_address
+00:116F A000            	   290:   ldy #0
+                        	   291: .readloop
+00:1171 209610          	   292:   jsr sd_readbyte
+00:1174 9140            	   293:   sta (zp_sd_address),y
+00:1176 C8              	   294:   iny
+00:1177 D0F8            	   295:   bne .readloop
+00:1179 60              	   296:   rts
+                        	   297: 
+                        	   298: 
+                        	   299: 
+                        	   300: 
+
+Source: "dirlist.s"
+                        	     5:   .include "libfat32.s"
+
+Source: "libfat32.s"
+                        	     1: ; FAT32/SD interface library
+                        	     2: ;
+                        	     3: ; This module requires some RAM workspace to be defined elsewhere:
+                        	     4: ; 
+                        	     5: ; fat32_workspace    - a large page-aligned 512-byte workspace
+                        	     6: ; zp_fat32_variables - 24 bytes of zero-page storage for variables etc
+                        	     7: 
+                        	     8: 
+                        	     9: fat32_readbuffer = fat32_workspace
+                        	    10: 
+                        	    11: fat32_fatstart          = zp_fat32_variables + $00  ; 4 bytes
+                        	    12: fat32_datastart         = zp_fat32_variables + $04  ; 4 bytes
+                        	    13: fat32_rootcluster       = zp_fat32_variables + $08  ; 4 bytes
+                        	    14: fat32_sectorspercluster = zp_fat32_variables + $0c  ; 1 byte
+                        	    15: fat32_pendingsectors    = zp_fat32_variables + $0d  ; 1 byte
+                        	    16: fat32_address           = zp_fat32_variables + $0e  ; 2 bytes
+                        	    17: fat32_nextcluster       = zp_fat32_variables + $10  ; 4 bytes
+                        	    18: fat32_bytesremaining    = zp_fat32_variables + $14  ; 4 bytes 
+                        	    19: 
+                        	    20: fat32_errorstage        = fat32_bytesremaining  ; only used during initializatio
+                        	    21: fat32_filenamepointer   = fat32_bytesremaining  ; only used when searching for a file
+                        	    22: 
+                        	    23: 
+                        	    24: fat32_init:
+                        	    25:   ; Initialize the module - read the MBR etc, find the partition,
+                        	    26:   ; and set up the variables ready for navigating the filesystem
+                        	    27: 
+                        	    28:   ; Read the MBR and extract pertinent information
+                        	    29: 
+00:117A A900            	    30:   lda #0
+00:117C 855A            	    31:   sta fat32_errorstage
+                        	    32: 
+                        	    33:   ; Sector 0
+00:117E A900            	    34:   lda #0
+00:1180 8542            	    35:   sta zp_sd_currentsector
+00:1182 8543            	    36:   sta zp_sd_currentsector+1
+00:1184 8544            	    37:   sta zp_sd_currentsector+2
+00:1186 8545            	    38:   sta zp_sd_currentsector+3
+                        	    39: 
+                        	    40:   ; Target buffer
+00:1188 A900            	    41:   lda #<fat32_readbuffer
+00:118A 8540            	    42:   sta zp_sd_address
+00:118C A902            	    43:   lda #>fat32_readbuffer
+00:118E 8541            	    44:   sta zp_sd_address+1
+                        	    45: 
+                        	    46:   ; Do the read
+00:1190 201C11          	    47:   jsr sd_readsector
+                        	    48: 
+                        	    49: 
+00:1193 E65A            	    50:   inc fat32_errorstage ; stage 1 = boot sector signature check
+                        	    51: 
+                        	    52:   ; Check some things
+00:1195 ADFE03          	    53:   lda fat32_readbuffer+510 ; Boot sector signature 55
+00:1198 C955            	    54:   cmp #$55
+00:119A D02D            	    55:   bne fail2
+00:119C ADFF03          	    56:   lda fat32_readbuffer+511 ; Boot sector signature aa
+00:119F C9AA            	    57:   cmp #$aa
+00:11A1 D026            	    58:   bne fail2
+                        	    59: 
+                        	    60: 
+00:11A3 E65A            	    61:   inc fat32_errorstage ; stage 2 = finding partition
+                        	    62: 
+                        	    63:   ; Find a FAT32 partition
+                        	    64: FSTYPE_FAT32 = 12
+00:11A5 A200            	    65:   ldx #0
+00:11A7 BDC203          	    66:   lda fat32_readbuffer+$1c2,x
+00:11AA C90C            	    67:   cmp #FSTYPE_FAT32
+00:11AC F01E            	    68:   beq foundpart
+00:11AE A210            	    69:   ldx #16
+00:11B0 BDC203          	    70:   lda fat32_readbuffer+$1c2,x
+00:11B3 C90C            	    71:   cmp #FSTYPE_FAT32
+00:11B5 F015            	    72:   beq foundpart
+00:11B7 A220            	    73:   ldx #32
+00:11B9 BDC203          	    74:   lda fat32_readbuffer+$1c2,x
+00:11BC C90C            	    75:   cmp #FSTYPE_FAT32
+00:11BE F00C            	    76:   beq foundpart
+00:11C0 A230            	    77:   ldx #48
+00:11C2 BDC203          	    78:   lda fat32_readbuffer+$1c2,x
+00:11C5 C90C            	    79:   cmp #FSTYPE_FAT32
+00:11C7 F003            	    80:   beq foundpart
+                        	    81: 
+                        	    82: fail2
+00:11C9 4C7612          	    83:   jmp error
+                        	    84: 
+                        	    85: foundpart
+                        	    86: 
+                        	    87:   ; Read the FAT32 BPB
+00:11CC BDC603          	    88:   lda fat32_readbuffer+$1c6,x
+00:11CF 8542            	    89:   sta zp_sd_currentsector
+00:11D1 BDC703          	    90:   lda fat32_readbuffer+$1c7,x
+00:11D4 8543            	    91:   sta zp_sd_currentsector+1
+00:11D6 BDC803          	    92:   lda fat32_readbuffer+$1c8,x
+00:11D9 8544            	    93:   sta zp_sd_currentsector+2
+00:11DB BDC903          	    94:   lda fat32_readbuffer+$1c9,x
+00:11DE 8545            	    95:   sta zp_sd_currentsector+3
+                        	    96: 
+00:11E0 201C11          	    97:   jsr sd_readsector
+                        	    98: 
+                        	    99: 
+00:11E3 E65A            	   100:   inc fat32_errorstage ; stage 3 = BPB signature check
+                        	   101: 
+                        	   102:   ; Check some things
+00:11E5 ADFE03          	   103:   lda fat32_readbuffer+510 ; BPB sector signature 55
+00:11E8 C955            	   104:   cmp #$55
+00:11EA D0DD            	   105:   bne fail2
+00:11EC ADFF03          	   106:   lda fat32_readbuffer+511 ; BPB sector signature aa
+00:11EF C9AA            	   107:   cmp #$aa
+00:11F1 D0D6            	   108:   bne fail2
+                        	   109: 
+00:11F3 E65A            	   110:   inc fat32_errorstage ; stage 4 = RootEntCnt check
+                        	   111: 
+00:11F5 AD1102          	   112:   lda fat32_readbuffer+17 ; RootEntCnt should be 0 for FAT32
+00:11F8 0D1202          	   113:   ora fat32_readbuffer+18
+00:11FB D0CC            	   114:   bne fail2
+                        	   115: 
+00:11FD E65A            	   116:   inc fat32_errorstage ; stage 5 = TotSec16 check
+                        	   117: 
+00:11FF AD1302          	   118:   lda fat32_readbuffer+19 ; TotSec16 should be 0 for FAT32
+00:1202 0D1402          	   119:   ora fat32_readbuffer+20
+00:1205 D0C2            	   120:   bne fail2
+                        	   121: 
+00:1207 E65A            	   122:   inc fat32_errorstage ; stage 6 = SectorsPerCluster check
+                        	   123: 
+                        	   124:   ; Check bytes per filesystem sector, it should be 512 for any SD card that supports FAT32
+00:1209 AD0B02          	   125:   lda fat32_readbuffer+11 ; low byte should be zero
+00:120C D0BB            	   126:   bne fail2
+00:120E AD0C02          	   127:   lda fat32_readbuffer+12 ; high byte is 2 (512), 4, 8, or 16
+00:1211 C902            	   128:   cmp #2
+00:1213 D0B4            	   129:   bne fail2
+                        	   130: 
+                        	   131: 
+                        	   132:   ; Calculate the starting sector of the FAT
+00:1215 18              	   133:   clc
+00:1216 A542            	   134:   lda zp_sd_currentsector
+00:1218 6D0E02          	   135:   adc fat32_readbuffer+14    ; reserved sectors lo
+00:121B 8546            	   136:   sta fat32_fatstart
+00:121D 854A            	   137:   sta fat32_datastart
+00:121F A543            	   138:   lda zp_sd_currentsector+1
+00:1221 6D0F02          	   139:   adc fat32_readbuffer+15    ; reserved sectors hi
+00:1224 8547            	   140:   sta fat32_fatstart+1
+00:1226 854B            	   141:   sta fat32_datastart+1
+00:1228 A544            	   142:   lda zp_sd_currentsector+2
+00:122A 6900            	   143:   adc #0
+00:122C 8548            	   144:   sta fat32_fatstart+2
+00:122E 854C            	   145:   sta fat32_datastart+2
+00:1230 A545            	   146:   lda zp_sd_currentsector+3
+00:1232 6900            	   147:   adc #0
+00:1234 8549            	   148:   sta fat32_fatstart+3
+00:1236 854D            	   149:   sta fat32_datastart+3
+                        	   150: 
+                        	   151:   ; Calculate the starting sector of the data area
+00:1238 AE1002          	   152:   ldx fat32_readbuffer+16   ; number of FATs
+                        	   153: skipfatsloop
+00:123B 18              	   154:   clc
+00:123C A54A            	   155:   lda fat32_datastart
+00:123E 6D2402          	   156:   adc fat32_readbuffer+36 ; fatsize 0
+00:1241 854A            	   157:   sta fat32_datastart
+00:1243 A54B            	   158:   lda fat32_datastart+1
+00:1245 6D2502          	   159:   adc fat32_readbuffer+37 ; fatsize 1
+00:1248 854B            	   160:   sta fat32_datastart+1
+00:124A A54C            	   161:   lda fat32_datastart+2
+00:124C 6D2602          	   162:   adc fat32_readbuffer+38 ; fatsize 2
+00:124F 854C            	   163:   sta fat32_datastart+2
+00:1251 A54D            	   164:   lda fat32_datastart+3
+00:1253 6D2702          	   165:   adc fat32_readbuffer+39 ; fatsize 3
+00:1256 854D            	   166:   sta fat32_datastart+3
+00:1258 CA              	   167:   dex
+00:1259 D0E0            	   168:   bne skipfatsloop
+                        	   169: 
+                        	   170:   ; Sectors-per-cluster is a power of two from 1 to 128
+00:125B AD0D02          	   171:   lda fat32_readbuffer+13
+00:125E 8552            	   172:   sta fat32_sectorspercluster
+                        	   173: 
+                        	   174:   ; Remember the root cluster
+00:1260 AD2C02          	   175:   lda fat32_readbuffer+44
+00:1263 854E            	   176:   sta fat32_rootcluster
+00:1265 AD2D02          	   177:   lda fat32_readbuffer+45
+00:1268 854F            	   178:   sta fat32_rootcluster+1
+00:126A AD2E02          	   179:   lda fat32_readbuffer+46
+00:126D 8550            	   180:   sta fat32_rootcluster+2
+00:126F AD2F02          	   181:   lda fat32_readbuffer+47
+00:1272 8551            	   182:   sta fat32_rootcluster+3
+                        	   183: 
+00:1274 18              	   184:   clc
+00:1275 60              	   185:   rts
+                        	   186: 
+                        	   187: error
+00:1276 38              	   188:   sec
+00:1277 60              	   189:   rts
+                        	   190: 
+                        	   191: 
+                        	   192: fat32_seekcluster:
+                        	   193:   ; Gets ready to read fat32_nextcluster, and advances it according to the FAT
+                        	   194:   
+                        	   195:   ; FAT sector = (cluster*4) / 512 = (cluster*2) / 256
+00:1278 A556            	   196:   lda fat32_nextcluster
+00:127A 0A              	   197:   asl
+00:127B A557            	   198:   lda fat32_nextcluster+1
+00:127D 2A              	   199:   rol
+00:127E 8542            	   200:   sta zp_sd_currentsector
+00:1280 A558            	   201:   lda fat32_nextcluster+2
+00:1282 2A              	   202:   rol
+00:1283 8543            	   203:   sta zp_sd_currentsector+1
+00:1285 A559            	   204:   lda fat32_nextcluster+3
+00:1287 2A              	   205:   rol
+00:1288 8544            	   206:   sta zp_sd_currentsector+2
+                        	   207:   ; note: cluster numbers never have the top bit set, so no carry can occur
+                        	   208: 
+                        	   209:   ; Add FAT starting sector
+00:128A A542            	   210:   lda zp_sd_currentsector
+00:128C 6546            	   211:   adc fat32_fatstart
+00:128E 8542            	   212:   sta zp_sd_currentsector
+00:1290 A543            	   213:   lda zp_sd_currentsector+1
+00:1292 6547            	   214:   adc fat32_fatstart+1
+00:1294 8543            	   215:   sta zp_sd_currentsector+1
+00:1296 A544            	   216:   lda zp_sd_currentsector+2
+00:1298 6548            	   217:   adc fat32_fatstart+2
+00:129A 8544            	   218:   sta zp_sd_currentsector+2
+00:129C A900            	   219:   lda #0
+00:129E 6549            	   220:   adc fat32_fatstart+3
+00:12A0 8545            	   221:   sta zp_sd_currentsector+3
+                        	   222: 
+                        	   223:   ; Target buffer
+00:12A2 A900            	   224:   lda #<fat32_readbuffer
+00:12A4 8540            	   225:   sta zp_sd_address
+00:12A6 A902            	   226:   lda #>fat32_readbuffer
+00:12A8 8541            	   227:   sta zp_sd_address+1
+                        	   228: 
+                        	   229:   ; Read the sector from the FAT
+00:12AA 201C11          	   230:   jsr sd_readsector
+                        	   231: 
+                        	   232:   ; Before using this FAT data, set currentsector ready to read the cluster itself
+                        	   233:   ; We need to multiply the cluster number minus two by the number of sectors per 
+                        	   234:   ; cluster, then add the data region start sector
+                        	   235: 
+                        	   236:   ; Subtract two from cluster number
+00:12AD 38              	   237:   sec
+00:12AE A556            	   238:   lda fat32_nextcluster
+00:12B0 E902            	   239:   sbc #2
+00:12B2 8542            	   240:   sta zp_sd_currentsector
+00:12B4 A557            	   241:   lda fat32_nextcluster+1
+00:12B6 E900            	   242:   sbc #0
+00:12B8 8543            	   243:   sta zp_sd_currentsector+1
+00:12BA A558            	   244:   lda fat32_nextcluster+2
+00:12BC E900            	   245:   sbc #0
+00:12BE 8544            	   246:   sta zp_sd_currentsector+2
+00:12C0 A559            	   247:   lda fat32_nextcluster+3
+00:12C2 E900            	   248:   sbc #0
+00:12C4 8545            	   249:   sta zp_sd_currentsector+3
+                        	   250:   
+                        	   251:   ; Multiply by sectors-per-cluster which is a power of two between 1 and 128
+00:12C6 A552            	   252:   lda fat32_sectorspercluster
+                        	   253: spcshiftloop
+00:12C8 4A              	   254:   lsr
+00:12C9 B00B            	   255:   bcs spcshiftloopdone
+00:12CB 0642            	   256:   asl zp_sd_currentsector
+00:12CD 2643            	   257:   rol zp_sd_currentsector+1
+00:12CF 2644            	   258:   rol zp_sd_currentsector+2
+00:12D1 2645            	   259:   rol zp_sd_currentsector+3
+00:12D3 4CC812          	   260:   jmp spcshiftloop
+                        	   261: spcshiftloopdone
+                        	   262: 
+                        	   263:   ; Add the data region start sector
+00:12D6 18              	   264:   clc
+00:12D7 A542            	   265:   lda zp_sd_currentsector
+00:12D9 654A            	   266:   adc fat32_datastart
+00:12DB 8542            	   267:   sta zp_sd_currentsector
+00:12DD A543            	   268:   lda zp_sd_currentsector+1
+00:12DF 654B            	   269:   adc fat32_datastart+1
+00:12E1 8543            	   270:   sta zp_sd_currentsector+1
+00:12E3 A544            	   271:   lda zp_sd_currentsector+2
+00:12E5 654C            	   272:   adc fat32_datastart+2
+00:12E7 8544            	   273:   sta zp_sd_currentsector+2
+00:12E9 A545            	   274:   lda zp_sd_currentsector+3
+00:12EB 654D            	   275:   adc fat32_datastart+3
+00:12ED 8545            	   276:   sta zp_sd_currentsector+3
+                        	   277: 
+                        	   278:   ; That's now ready for later code to read this sector in - tell it how many consecutive
+                        	   279:   ; sectors it can now read
+00:12EF A552            	   280:   lda fat32_sectorspercluster
+00:12F1 8553            	   281:   sta fat32_pendingsectors
+                        	   282: 
+                        	   283:   ; Now go back to looking up the next cluster in the chain
+                        	   284:   ; Find the offset to this cluster's entry in the FAT sector we loaded earlier
+                        	   285: 
+                        	   286:   ; Offset = (cluster*4) & 511 = (cluster & 127) * 4
+00:12F3 A556            	   287:   lda fat32_nextcluster
+00:12F5 297F            	   288:   and #$7f
+00:12F7 0A              	   289:   asl
+00:12F8 0A              	   290:   asl
+00:12F9 A8              	   291:   tay ; Y = low byte of offset
+                        	   292: 
+                        	   293:   ; Add the potentially carried bit to the high byte of the address
+00:12FA A541            	   294:   lda zp_sd_address+1
+00:12FC 6900            	   295:   adc #0
+00:12FE 8541            	   296:   sta zp_sd_address+1
+                        	   297: 
+                        	   298:   ; Copy out the next cluster in the chain for later use
+00:1300 B140            	   299:   lda (zp_sd_address),y
+00:1302 8556            	   300:   sta fat32_nextcluster
+00:1304 C8              	   301:   iny
+00:1305 B140            	   302:   lda (zp_sd_address),y
+00:1307 8557            	   303:   sta fat32_nextcluster+1
+00:1309 C8              	   304:   iny
+00:130A B140            	   305:   lda (zp_sd_address),y
+00:130C 8558            	   306:   sta fat32_nextcluster+2
+00:130E C8              	   307:   iny
+00:130F B140            	   308:   lda (zp_sd_address),y
+00:1311 290F            	   309:   and #$0f
+00:1313 8559            	   310:   sta fat32_nextcluster+3
+                        	   311: 
+                        	   312:   ; See if it's the end of the chain
+00:1315 09F0            	   313:   ora #$f0
+00:1317 2558            	   314:   and fat32_nextcluster+2
+00:1319 2557            	   315:   and fat32_nextcluster+1
+00:131B C9FF            	   316:   cmp #$ff
+00:131D D008            	   317:   bne notendofchain
+00:131F A556            	   318:   lda fat32_nextcluster
+00:1321 C9F8            	   319:   cmp #$f8
+00:1323 9002            	   320:   bcc notendofchain
+                        	   321: 
+                        	   322:   ; It's the end of the chain, set the top bits so that we can tell this later on
+00:1325 8559            	   323:   sta fat32_nextcluster+3
+                        	   324: notendofchain
+                        	   325: 
+00:1327 60              	   326:   rts
+                        	   327: 
+                        	   328: 
+                        	   329: fat32_readnextsector:
+                        	   330:   ; Reads the next sector from a cluster chain into the buffer at fat32_address.
+                        	   331:   ;
+                        	   332:   ; Advances the current sector ready for the next read and looks up the next cluster
+                        	   333:   ; in the chain when necessary.
+                        	   334:   ;
+                        	   335:   ; On return, carry is clear if data was read, or set if the cluster chain has ended.
+                        	   336: 
+                        	   337:   ; Maybe there are pending sectors in the current cluster
+00:1328 A553            	   338:   lda fat32_pendingsectors
+00:132A D007            	   339:   bne readsector
+                        	   340: 
+                        	   341:   ; No pending sectors, check for end of cluster chain
+00:132C A559            	   342:   lda fat32_nextcluster+3
+00:132E 3020            	   343:   bmi endofchain
+                        	   344: 
+                        	   345:   ; Prepare to read the next cluster
+00:1330 207812          	   346:   jsr fat32_seekcluster
+                        	   347: 
+                        	   348: readsector
+00:1333 C653            	   349:   dec fat32_pendingsectors
+                        	   350: 
+                        	   351:   ; Set up target address  
+00:1335 A554            	   352:   lda fat32_address
+00:1337 8540            	   353:   sta zp_sd_address
+00:1339 A555            	   354:   lda fat32_address+1
+00:133B 8541            	   355:   sta zp_sd_address+1
+                        	   356: 
+                        	   357:   ; Read the sector
+00:133D 201C11          	   358:   jsr sd_readsector
+                        	   359: 
+                        	   360:   ; Advance to next sector
+00:1340 E642            	   361:   inc zp_sd_currentsector
+00:1342 D00A            	   362:   bne sectorincrementdone
+00:1344 E643            	   363:   inc zp_sd_currentsector+1
+00:1346 D006            	   364:   bne sectorincrementdone
+00:1348 E644            	   365:   inc zp_sd_currentsector+2
+00:134A D002            	   366:   bne sectorincrementdone
+00:134C E645            	   367:   inc zp_sd_currentsector+3
+                        	   368: sectorincrementdone
+                        	   369: 
+                        	   370:   ; Success - clear carry and return
+00:134E 18              	   371:   clc
+00:134F 60              	   372:   rts
+                        	   373: 
+                        	   374: endofchain
+                        	   375:   ; End of chain - set carry and return
+00:1350 38              	   376:   sec
+00:1351 60              	   377:   rts
+                        	   378: 
+                        	   379: 
+                        	   380: fat32_openroot:
+                        	   381:   ; Prepare to read the root directory
+                        	   382: 
+00:1352 A54E            	   383:   lda fat32_rootcluster
+00:1354 8556            	   384:   sta fat32_nextcluster
+00:1356 A54F            	   385:   lda fat32_rootcluster+1
+00:1358 8557            	   386:   sta fat32_nextcluster+1
+00:135A A550            	   387:   lda fat32_rootcluster+2
+00:135C 8558            	   388:   sta fat32_nextcluster+2
+00:135E A551            	   389:   lda fat32_rootcluster+3
+00:1360 8559            	   390:   sta fat32_nextcluster+3
+                        	   391: 
+00:1362 207812          	   392:   jsr fat32_seekcluster
+                        	   393: 
+                        	   394:   ; Set the pointer to a large value so we always read a sector the first time through
+00:1365 A9FF            	   395:   lda #$ff
+00:1367 8541            	   396:   sta zp_sd_address+1
+                        	   397: 
+00:1369 60              	   398:   rts
+                        	   399: 
+                        	   400: 
+                        	   401: fat32_opendirent:
+                        	   402:   ; Prepare to read from a file or directory based on a dirent
+                        	   403:   ;
+                        	   404:   ; Point zp_sd_address at the dirent
+                        	   405: 
+                        	   406:   ; Remember file size in bytes remaining
+00:136A A01C            	   407:   ldy #28
+00:136C B140            	   408:   lda (zp_sd_address),y
+00:136E 855A            	   409:   sta fat32_bytesremaining
+00:1370 C8              	   410:   iny
+00:1371 B140            	   411:   lda (zp_sd_address),y
+00:1373 855B            	   412:   sta fat32_bytesremaining+1
+00:1375 C8              	   413:   iny
+00:1376 B140            	   414:   lda (zp_sd_address),y
+00:1378 855C            	   415:   sta fat32_bytesremaining+2
+00:137A C8              	   416:   iny
+00:137B B140            	   417:   lda (zp_sd_address),y
+00:137D 855D            	   418:   sta fat32_bytesremaining+3
+                        	   419: 
+                        	   420:   ; Seek to first cluster
+00:137F A01A            	   421:   ldy #26
+00:1381 B140            	   422:   lda (zp_sd_address),y
+00:1383 8556            	   423:   sta fat32_nextcluster
+00:1385 C8              	   424:   iny
+00:1386 B140            	   425:   lda (zp_sd_address),y
+00:1388 8557            	   426:   sta fat32_nextcluster+1
+00:138A A014            	   427:   ldy #20
+00:138C B140            	   428:   lda (zp_sd_address),y
+00:138E 8558            	   429:   sta fat32_nextcluster+2
+00:1390 C8              	   430:   iny
+00:1391 B140            	   431:   lda (zp_sd_address),y
+00:1393 8559            	   432:   sta fat32_nextcluster+3
+                        	   433: 
+00:1395 207812          	   434:   jsr fat32_seekcluster
+                        	   435: 
+                        	   436:   ; Set the pointer to a large value so we always read a sector the first time through
+00:1398 A9FF            	   437:   lda #$ff
+00:139A 8541            	   438:   sta zp_sd_address+1
+                        	   439: 
+00:139C 60              	   440:   rts
+                        	   441: 
+                        	   442: 
+                        	   443: fat32_readdirent:
+                        	   444:   ; Read a directory entry from the open directory
+                        	   445:   ;
+                        	   446:   ; On exit the carry is set if there were no more directory entries.
+                        	   447:   ;
+                        	   448:   ; Otherwise, A is set to the file's attribute byte and
+                        	   449:   ; zp_sd_address points at the returned directory entry.
+                        	   450:   ; LFNs and empty entries are ignored automatically.
+                        	   451: 
+                        	   452:   ; Increment pointer by 32 to point to next entry
+00:139D 18              	   453:   clc
+00:139E A540            	   454:   lda zp_sd_address
+00:13A0 6920            	   455:   adc #32
+00:13A2 8540            	   456:   sta zp_sd_address
+00:13A4 A541            	   457:   lda zp_sd_address+1
+00:13A6 6900            	   458:   adc #0
+00:13A8 8541            	   459:   sta zp_sd_address+1
+                        	   460: 
+                        	   461:   ; If it's not at the end of the buffer, we have data already
+00:13AA C904            	   462:   cmp #>(fat32_readbuffer+$200)
+00:13AC 900F            	   463:   bcc gotdata1
+                        	   464: 
+                        	   465:   ; Read another sector
+00:13AE A900            	   466:   lda #<fat32_readbuffer
+00:13B0 8554            	   467:   sta fat32_address
+00:13B2 A902            	   468:   lda #>fat32_readbuffer
+00:13B4 8555            	   469:   sta fat32_address+1
+                        	   470: 
+00:13B6 202813          	   471:   jsr fat32_readnextsector
+00:13B9 9002            	   472:   bcc gotdata1
+                        	   473: 
+                        	   474: endofdirectory
+00:13BB 38              	   475:   sec
+00:13BC 60              	   476:   rts
+                        	   477: 
+                        	   478: gotdata1
+                        	   479:   ; Check first character
+00:13BD A000            	   480:   ldy #0
+00:13BF B140            	   481:   lda (zp_sd_address),y
+                        	   482: 
+                        	   483:   ; End of directory => abort
+00:13C1 F0F8            	   484:   beq endofdirectory
+                        	   485: 
+                        	   486:   ; Empty entry => start again
+00:13C3 C9E5            	   487:   cmp #$e5
+00:13C5 F0D6            	   488:   beq fat32_readdirent
+                        	   489: 
+                        	   490:   ; Check attributes
+00:13C7 A00B            	   491:   ldy #11
+00:13C9 B140            	   492:   lda (zp_sd_address),y
+00:13CB 293F            	   493:   and #$3f
+00:13CD C90F            	   494:   cmp #$0f ; LFN => start again
+00:13CF F0CC            	   495:   beq fat32_readdirent
+                        	   496: 
+                        	   497:   ; Yield this result
+00:13D1 18              	   498:   clc
+00:13D2 60              	   499:   rts
+                        	   500: 
+                        	   501: 
+                        	   502: fat32_finddirent:
+                        	   503:   ; Finds a particular directory entry.  X,Y point to the 11-character filename to seek.
+                        	   504:   ; The directory should already be open for iteration.
+                        	   505: 
+                        	   506:   ; Form ZP pointer to user's filename
+00:13D3 865A            	   507:   stx fat32_filenamepointer
+00:13D5 845B            	   508:   sty fat32_filenamepointer+1
+                        	   509:   
+                        	   510:   ; Iterate until name is found or end of directory
+                        	   511: direntloop
+00:13D7 209D13          	   512:   jsr fat32_readdirent
+00:13DA A00A            	   513:   ldy #10
+00:13DC 9001            	   514:   bcc comparenameloop
+00:13DE 60              	   515:   rts ; with carry set
+                        	   516: 
+                        	   517: comparenameloop
+00:13DF B140            	   518:   lda (zp_sd_address),y
+00:13E1 D15A            	   519:   cmp (fat32_filenamepointer),y
+00:13E3 D0F2            	   520:   bne direntloop ; no match
+00:13E5 88              	   521:   dey
+00:13E6 10F7            	   522:   bpl comparenameloop
+                        	   523: 
+                        	   524:   ; Found it
+00:13E8 18              	   525:   clc
+00:13E9 60              	   526:   rts
+                        	   527: 
+                        	   528: 
+                        	   529: fat32_file_readbyte:
+                        	   530:   ; Read a byte from an open file
+                        	   531:   ;
+                        	   532:   ; The byte is returned in A with C clear; or if end-of-file was reached, C is set instead
+                        	   533: 
+00:13EA 38              	   534:   sec
+                        	   535: 
+                        	   536:   ; Is there any data to read at all?
+00:13EB A55A            	   537:   lda fat32_bytesremaining
+00:13ED 055B            	   538:   ora fat32_bytesremaining+1
+00:13EF 055C            	   539:   ora fat32_bytesremaining+2
+00:13F1 055D            	   540:   ora fat32_bytesremaining+3
+00:13F3 F03D            	   541:   beq RTNSUB
+                        	   542: 
+                        	   543:   ; Decrement the remaining byte count
+00:13F5 A55A            	   544:   lda fat32_bytesremaining
+00:13F7 E901            	   545:   sbc #1
+00:13F9 855A            	   546:   sta fat32_bytesremaining
+00:13FB A55B            	   547:   lda fat32_bytesremaining+1
+00:13FD E900            	   548:   sbc #0
+00:13FF 855B            	   549:   sta fat32_bytesremaining+1
+00:1401 A55C            	   550:   lda fat32_bytesremaining+2
+00:1403 E900            	   551:   sbc #0
+00:1405 855C            	   552:   sta fat32_bytesremaining+2
+00:1407 A55D            	   553:   lda fat32_bytesremaining+3
+00:1409 E900            	   554:   sbc #0
+00:140B 855D            	   555:   sta fat32_bytesremaining+3
+                        	   556:   
+                        	   557:   ; Need to read a new sector?
+00:140D A541            	   558:   lda zp_sd_address+1
+00:140F C904            	   559:   cmp #>(fat32_readbuffer+$200)
+00:1411 900D            	   560:   bcc gotdata2
+                        	   561: 
+                        	   562:   ; Read another sector
+00:1413 A900            	   563:   lda #<fat32_readbuffer
+00:1415 8554            	   564:   sta fat32_address
+00:1417 A902            	   565:   lda #>fat32_readbuffer
+00:1419 8555            	   566:   sta fat32_address+1
+                        	   567: 
+00:141B 202813          	   568:   jsr fat32_readnextsector
+00:141E B012            	   569:   bcs RTNSUB                    ; this shouldn't happen
+                        	   570: 
+                        	   571: gotdata2
+00:1420 A000            	   572:   ldy #0
+00:1422 B140            	   573:   lda (zp_sd_address),y
+                        	   574: 
+00:1424 E640            	   575:   inc zp_sd_address
+00:1426 D00A            	   576:   bne RTNSUB
+00:1428 E641            	   577:   inc zp_sd_address+1
+00:142A D006            	   578:   bne RTNSUB
+00:142C E642            	   579:   inc zp_sd_address+2
+00:142E D002            	   580:   bne RTNSUB
+00:1430 E643            	   581:   inc zp_sd_address+3
+                        	   582: 
+                        	   583: RTNSUB
+00:1432 60              	   584:   rts
+                        	   585: 
+                        	   586: 
+                        	   587: fat32_file_read:
+                        	   588:   ; Read a whole file into memory.  It's assumed the file has just been opened 
+                        	   589:   ; and no data has been read yet.
+                        	   590:   ;
+                        	   591:   ; Also we read whole sectors, so data in the target region beyond the end of the 
+                        	   592:   ; file may get overwritten, up to the next 512-byte boundary.
+                        	   593:   ;
+                        	   594:   ; And we don't properly support 64k+ files, as it's unnecessary complication given
+                        	   595:   ; the 6502's small address space
+                        	   596: 
+                        	   597:   ; Round the size up to the next whole sector
+00:1433 A55A            	   598:   lda fat32_bytesremaining
+00:1435 C901            	   599:   cmp #1                      ; set carry if bottom 8 bits not zero
+00:1437 A55B            	   600:   lda fat32_bytesremaining+1
+00:1439 6900            	   601:   adc #0                      ; add carry, if any
+00:143B 4A              	   602:   lsr                         ; divide by 2
+00:143C 6900            	   603:   adc #0                      ; round up
+                        	   604: 
+                        	   605:   ; No data?
+00:143E F012            	   606:   beq done
+                        	   607: 
+                        	   608:   ; Store sector count - not a byte count any more
+00:1440 855A            	   609:   sta fat32_bytesremaining
+                        	   610: 
+                        	   611:   ; Read entire sectors to the user-supplied buffer
+                        	   612: wholesectorreadloop
+                        	   613:   ; Read a sector to fat32_address
+00:1442 202813          	   614:   jsr fat32_readnextsector
+                        	   615: 
+                        	   616:   ; Advance fat32_address by 512 bytes
+00:1445 A555            	   617:   lda fat32_address+1
+00:1447 6902            	   618:   adc #2                      ; carry already clear
+00:1449 8555            	   619:   sta fat32_address+1
+                        	   620: 
+00:144B A65A            	   621:   ldx fat32_bytesremaining    ; note - actually loads sectors remaining
+00:144D CA              	   622:   dex
+00:144E 865A            	   623:   stx fat32_bytesremaining    ; note - actually stores sectors remaining
+                        	   624: 
+00:1450 D0F0            	   625:   bne wholesectorreadloop
+                        	   626: 
+                        	   627: done
+00:1452 60              	   628:   rts
+                        	   629: 
+                        	   630: 
+
+Source: "dirlist.s"
+                        	     6:   .include "liblcd.s"
+
+Source: "liblcd.s"
+                        	     1: ; LCD interfacing, minor modifications to Ben Eater's code
+                        	     2: 
+                        	     3: lcd_wait:
+00:1453 48              	     4:   pha
+00:1454 A900            	     5:   lda #%00000000  ; Port B is input
+00:1456 8D0270          	     6:   sta DDRB
+00:1459 20EE14          	     7:   JSR short_delay
+                        	     8: .busy:
+00:145C A940            	     9:   lda #LCD_RW
+00:145E 8D0170          	    10:   sta PORTA
+00:1461 A9C0            	    11:   lda #(LCD_RW | LCD_E)
+00:1463 8D0170          	    12:   sta PORTA
+00:1466 AD0070          	    13:   lda PORTB
+00:1469 2980            	    14:   and #%10000000
+00:146B D0EF            	    15:   bne .busy
+                        	    16: 
+00:146D A940            	    17:   lda #LCD_RW
+00:146F 8D0170          	    18:   sta PORTA
+00:1472 A9FF            	    19:   lda #%11111111  ; Port B is output
+00:1474 20EE14          	    20:   JSR short_delay
+00:1477 8D0270          	    21:   sta DDRB
+00:147A 68              	    22:   pla
+00:147B 60              	    23:   rts
+                        	    24: 
+                        	    25: lcd_instruction:
+00:147C 205314          	    26:   jsr lcd_wait
+00:147F 8D0070          	    27:   sta PORTB
+00:1482 A900            	    28:   lda #0         ; Clear RS/RW/E bits
+00:1484 8D0170          	    29:   sta PORTA
+00:1487 A980            	    30:   lda #LCD_E     ; Set E bit to send instruction
+00:1489 8D0170          	    31:   sta PORTA
+00:148C A900            	    32:   lda #0         ; Clear RS/RW/E bits
+00:148E 8D0170          	    33:   sta PORTA
+00:1491 60              	    34:   rts
+                        	    35: 
+                        	    36: 
+                        	    37: lcd_init:
+00:1492 A938            	    38:   lda #%00111000 ; Set 8-bit mode; 2-line display; 5x8 font
+00:1494 207C14          	    39:   jsr lcd_instruction
+00:1497 A90E            	    40:   lda #%00001110 ; Display on; cursor on; blink off
+00:1499 207C14          	    41:   jsr lcd_instruction
+00:149C A906            	    42:   lda #%00000110 ; Increment and shift cursor; don't shift display
+00:149E 207C14          	    43:   jsr lcd_instruction
+                        	    44: 
+                        	    45: lcd_cleardisplay:
+00:14A1 A901            	    46:   lda #%00000001 ; Clear display
+00:14A3 4C7C14          	    47:   jmp lcd_instruction
+                        	    48: 
+                        	    49: lcd_setpos_startline0:
+00:14A6 A980            	    50:   lda #%10000000
+00:14A8 4C7C14          	    51:   jmp lcd_instruction
+                        	    52: 
+                        	    53: lcd_setpos_startline1:
+00:14AB A9C0            	    54:   lda #%11000000
+00:14AD 4C7C14          	    55:   jmp lcd_instruction
+                        	    56: 
+                        	    57: lcd_setpos_xy:
+00:14B0 8A              	    58:   txa
+00:14B1 0A              	    59:   asl
+00:14B2 0A              	    60:   asl
+00:14B3 C001            	    61:   cpy #1  ; set carry if Y >= 1
+00:14B5 6A              	    62:   ror
+00:14B6 38              	    63:   sec
+00:14B7 6A              	    64:   ror
+00:14B8 4C7C14          	    65:   jmp lcd_instruction
+                        	    66: 
+                        	    67: 
+                        	    68: print_char:
+00:14BB 205314          	    69:   jsr lcd_wait
+00:14BE 8D0070          	    70:   sta PORTB
+00:14C1 A920            	    71:   lda #LCD_RS             ; Set RS; Clear RW/E bits
+00:14C3 8D0170          	    72:   sta PORTA
+00:14C6 A9A0            	    73:   lda #(LCD_RS | LCD_E)   ; Set E bit to send instruction
+00:14C8 8D0170          	    74:   sta PORTA
+00:14CB A920            	    75:   lda #LCD_RS             ; Clear E bits
+00:14CD 8D0170          	    76:   sta PORTA
+00:14D0 60              	    77:   rts
+                        	    78: 
+                        	    79: print_hex:
+00:14D1 48              	    80:   pha
+00:14D2 6A              	    81:   ror
+00:14D3 6A              	    82:   ror
+00:14D4 6A              	    83:   ror
+00:14D5 6A              	    84:   ror
+00:14D6 20E014          	    85:   jsr print_nybble
+00:14D9 68              	    86:   pla
+00:14DA 48              	    87:   pha
+00:14DB 20E014          	    88:   jsr print_nybble
+00:14DE 68              	    89:   pla
+00:14DF 60              	    90:   rts
+                        	    91: print_nybble:
+00:14E0 290F            	    92:   and #15
+00:14E2 C90A            	    93:   cmp #10
+00:14E4 3002            	    94:   bmi .skipletter
+00:14E6 6906            	    95:   adc #6
+                        	    96: .skipletter
+00:14E8 6930            	    97:   adc #48
+00:14EA 20BB14          	    98:   jsr print_char
+00:14ED 60              	    99:   rts
+                        	   100: 
+                        	   101: ; DON MOD FOR PICO 65C02
+                        	   102: short_delay
+00:14EE A280            	   103:   ldx #128
+                        	   104: lp
+00:14F0 CA              	   105:   dex
+00:14F1 D0FD            	   106:   bne lp
+00:14F3 60              	   107:   rts
+                        	   108: 
+
+Source: "dirlist.s"
+                        	     7:   
+                        	     8: zp_sd_address = $40         ; 2 bytes
+                        	     9: zp_sd_currentsector = $42   ; 4 bytes
+                        	    10: zp_fat32_variables = $46    ; 24 bytes
+                        	    11: 
+                        	    12: fat32_workspace = $200      ; two pages
+                        	    13: 
+                        	    14: buffer      = $400
+                        	    15:   
+                        	    16: CR          = $0D                 ; Carriage Return
+                        	    17: LF          = $0A                 ; Line Feed
+                        	    18: SP          = $20                 ; Space
+                        	    19: ESC         = $1B                 ; Escape
+                        	    20: NUL         = $00                 ; Null
+                        	    21: MSGL        = $81
+                        	    22: MSGH        = $82
+                        	    23: ECHO        = $FFEF
+                        	    24: GETLINE     = $FF1F
+                        	    25: 
+                        	    26: DIRLIST
+00:14F4 200010          	    27:             jsr via_init
+00:14F7 200B10          	    28:             jsr sd_init
+00:14FA 207A11          	    29:             jsr fat32_init
+00:14FD 9010            	    30:             bcc initsuccess
+                        	    31: 
+                        	    32: 
+                        	    33:   ; Error during FAT32 initialization
+00:14FF A95A            	    34:             lda #'Z'
+00:1501 20EFFF          	    35:             JSR ECHO
+00:1504 20BB14          	    36:             jsr print_char
+00:1507 A55A            	    37:             lda fat32_errorstage
+00:1509 20D114          	    38:             jsr print_hex
+00:150C 4CF414          	    39:             jmp DIRLIST ; For testing try again!
+                        	    40: 
+                        	    41: initsuccess
+                        	    42:   ; Open root directory
+00:150F 205213          	    43:             jsr fat32_openroot
+                        	    44: 
+                        	    45:   ; Find subdirectory by name
+00:1512 A2D7            	    46:             ldx #<subdirname
+00:1514 A016            	    47:             ldy #>subdirname
+00:1516 20D313          	    48:             jsr fat32_finddirent
+00:1519 900B            	    49:             bcc foundsubdir
+                        	    50: 
+                        	    51:   ; Subdirectory not found
+00:151B A958            	    52:             lda #'X'
+00:151D 20EFFF          	    53:             JSR ECHO
+00:1520 20BB14          	    54:             jsr print_char
+00:1523 4CF414          	    55:             jmp DIRLIST ; For testing try again!
+                        	    56: 
+                        	    57: foundsubdir
+                        	    58:             ; Open subdirectory
+00:1526 206A13          	    59:             jsr fat32_opendirent
+                        	    60: 
+                        	    61: ; ------------------------------------------------
+                        	    62: ; Don Mod Start
+                        	    63: ; ------------------------------------------------
+                        	    64: ; Set your memory positon to $0800
+                        	    65: ; set pointer at $00 to $1000
+                        	    66: ; ------------------------------------------------
+00:1529 48              	    67:             PHA             ; PHA operation pushes a copy of the content of Accumulator onto the Stack Structure.
+00:152A A900            	    68:             LDA #$00        ; Put a value of zero into the accumulator
+00:152C 8500            	    69:             STA $00         ; Store the accumulator value 00 at location 00  
+00:152E A910            	    70:             LDA #$10        ; Put a value of 08 into the accumulator
+00:1530 8501            	    71:             STA $01         ; Store the accumulator at location 01, now position 0001 = 0080 (little endian)
+00:1532 68              	    72:             PLA  
+                        	    73: 
+00:1533 A20B            	    74:             ldx #$B         ; max value for $01 - 11 chars per entry
+00:1535 A000            	    75:             ldy #0          ; index
+00:1537 8C8107          	    76:             sty $781        ; Debug
+                        	    77: ; ----------------------------
+                        	    78: ; READ IN one byte at a then 9
+                        	    79: ; ----------------------------
+                        	    80: my_read_directory:
+                        	    81:             ;sta fat32_address+1 Not serving any purpose I can tell?
+00:153A 209D13          	    82:             jsr fat32_readdirent ; A is set to the file's attribute byte and zp_sd_address points at the returned direc
+00:153D B059            	    83:             bcs done_read ; Carry set when at end of directory
+00:153F 8D9007          	    84:             sta $790 ; DEBUG
+00:1542 20EFFF          	    85:             jsr ECHO ; DEBUG
+                        	    86:             ; FIRST TIME
+00:1545 A901            	    87:             lda #1 ; Just an indicator
+00:1547 CD9107          	    88:             cmp $791
+00:154A D060            	    89:             BNE PRINT_HEADING ; First cycle so have not printed heading yet
+                        	    90: print_dirlist
+00:154C A000            	    91:             ldy #0
+00:154E B140            	    92:             lda (zp_sd_address),y
+00:1550 20EFFF          	    93:             jsr ECHO
+00:1553 C8              	    94:             iny
+00:1554 B140            	    95:             lda (zp_sd_address),y
+00:1556 20EFFF          	    96:             jsr ECHO
+00:1559 C8              	    97:             iny
+00:155A B140            	    98:             lda (zp_sd_address),y
+00:155C 20EFFF          	    99:             jsr ECHO
+00:155F C8              	   100:             iny
+00:1560 B140            	   101:             lda (zp_sd_address),y
+00:1562 20EFFF          	   102:             jsr ECHO
+00:1565 C8              	   103:             iny
+00:1566 B140            	   104:             lda (zp_sd_address),y
+00:1568 20EFFF          	   105:             jsr ECHO
+00:156B C8              	   106:             iny
+00:156C B140            	   107:             lda (zp_sd_address),y
+00:156E 20EFFF          	   108:             jsr ECHO
+00:1571 C8              	   109:             iny
+00:1572 B140            	   110:             lda (zp_sd_address),y
+00:1574 20EFFF          	   111:             jsr ECHO  
+00:1577 C8              	   112:             iny
+00:1578 B140            	   113:             lda (zp_sd_address),y
+00:157A 20EFFF          	   114:             jsr ECHO
+00:157D C8              	   115:             iny
+00:157E B140            	   116:             lda (zp_sd_address),y
+00:1580 20EFFF          	   117:             jsr ECHO
+00:1583 C8              	   118:             iny
+00:1584 B140            	   119:             lda (zp_sd_address),y
+00:1586 C8              	   120:             iny
+00:1587 B140            	   121:             lda (zp_sd_address),y
+00:1589 C8              	   122:             iny
+00:158A B140            	   123:             lda (zp_sd_address),y
+                        	   124: 
+00:158C 200C16          	   125:             JSR PRINTCR ; Was jus this one
+00:158F 201216          	   126:             JSR PRINTLF
+                        	   127:             
+                        	   128: 
+00:1592 80A6            	   129:             bra my_read_directory   ; Branch till we don't need to branch no more
+                        	   130: 
+00:1594 209815          	   131:             jsr done_read           ; instead of brk, jmp done - probably return to wozmon
+00:1597 60              	   132:             RTS
+                        	   133:   done_read:
+00:1598 A900            	   134:             LDA #0
+00:159A 8D9107          	   135:             STA $791                ; Just an indicator
+00:159D 18              	   136:             clc                     ; CLEAR THE CARRY
+00:159E 200C16          	   137:             JSR PRINTCR
+00:15A1 201216          	   138:             JSR PRINTLF
+                        	   139:                   
+                        	   140:             ; Lets now disable the VIA else continues to spin SD Card
+00:15A4 A900            	   141:             lda #0
+00:15A6 8510            	   142:             sta SD_CS
+                        	   143: 
+                        	   144:             ;PORTA_DISABLE = LCD_E | LCD_RW | LCD_RS | SD_CS | SD_SCK | SD_MOSI
+                        	   145:             ;lda #PORTA_DISABLE   ; Set various pins on port A to output
+                        	   146:             ;sta DDRA
+                        	   147:             ; Reset the lCD
+00:15A8 20A114          	   148:             jsr lcd_cleardisplay
+                        	   149: 
+00:15AB 60              	   150:             RTS
+                        	   151:             
+                        	   152: ;print2:     lda message,x
+                        	   153: ;            beq DONELCD2
+                        	   154: ;            jsr print_char
+                        	   155: ;            inx
+                        	   156: ;            jmp print2        
+                        	   157: ;DONELCD2:   NOP
+                        	   158: ;            rts ; Return
+                        	   159:             ;JMP INPUT           ; INPUT CYCLE 
+                        	   160:             ;JMP GETLINE
+                        	   161:             ;JMP $FF00
+                        	   162: 
+                        	   163: 
+                        	   164: PRINT_HEADING
+00:15AC A901            	   165:             LDA #1  ; Just an indicator
+00:15AE 8D9107          	   166:             STA $791  
+                        	   167: 
+00:15B1 200C16          	   168:             JSR PRINTCR
+00:15B4 201216          	   169:             JSR PRINTLF
+                        	   170:             ;  
+                        	   171: 
+00:15B7 A951            	   172:             LDA #<MSGTOPBAR
+00:15B9 8581            	   173:             STA MSGL
+00:15BB A916            	   174:             LDA #>MSGTOPBAR
+00:15BD 8582            	   175:             STA MSGH
+00:15BF 20FF15          	   176:             JSR SHWMSG
+                        	   177: 
+00:15C2 200C16          	   178:             JSR PRINTCR ; was just this one
+00:15C5 201216          	   179:             JSR PRINTLF            
+                        	   180: 
+00:15C8 A973            	   181:             LDA #<MSGDIRLST
+00:15CA 8581            	   182:             STA MSGL
+00:15CC A916            	   183:             LDA #>MSGDIRLST
+00:15CE 8582            	   184:             STA MSGH
+00:15D0 20FF15          	   185:             JSR SHWMSG
+                        	   186: 
+00:15D3 200C16          	   187:             JSR PRINTCR  ; Was just this one
+00:15D6 201216          	   188:             JSR PRINTLF
+                        	   189: 
+00:15D9 A994            	   190:             LDA #<MSGUSEINF
+00:15DB 8581            	   191:             STA MSGL
+00:15DD A916            	   192:             LDA #>MSGUSEINF
+00:15DF 8582            	   193:             STA MSGH
+00:15E1 20FF15          	   194:             JSR SHWMSG
+                        	   195: 
+00:15E4 200C16          	   196:             JSR PRINTCR  ; Was just this one
+00:15E7 201216          	   197:             JSR PRINTLF
+                        	   198: 
+00:15EA A9B6            	   199:             LDA #<MSGLOWBAR
+00:15EC 8581            	   200:             STA MSGL
+00:15EE A916            	   201:             LDA #>MSGLOWBAR
+00:15F0 8582            	   202:             STA MSGH
+00:15F2 20FF15          	   203:             JSR SHWMSG
+                        	   204: 
+00:15F5 200C16          	   205:             JSR PRINTCR  ; Was just this one
+00:15F8 201216          	   206:             JSR PRINTLF
+                        	   207: 
+00:15FB 204C15          	   208:             JSR print_dirlist
+00:15FE 60              	   209:             RTS
+                        	   210:  
+00:15FF A000            	   211: SHWMSG      LDY #$0
+00:1601 B181            	   212: PRINT       LDA (MSGL),Y
+00:1603 F006            	   213:             BEQ DONE
+00:1605 20EFFF          	   214:             JSR ECHO
+00:1608 C8              	   215:             INY 
+00:1609 D0F6            	   216:             BNE PRINT
+00:160B 60              	   217: DONE        RTS   
+                        	   218: 
+                        	   219: PRINTCR
+00:160C A90D            	   220:             lda #CR 
+00:160E 20EFFF          	   221:             jsr ECHO
+00:1611 60              	   222:             rts
+                        	   223:   
+                        	   224: PRINTLF
+00:1612 A90A            	   225:             lda #LF 
+00:1614 20EFFF          	   226:             jsr ECHO
+00:1617 60              	   227:             rts
+                        	   228: 
+00:1618 3139323030206B62	   229: message:     .asciiz "19200 kbs Serial                        8 / N / 1 READY!"
+00:1620 732053657269616C
+00:1628 2020202020202020
+00:1630 2020202020202020
+00:1638 2020202020202020
+00:1640 38202F204E202F20
+00:1648 3120524541445921
+00:1650 00
+00:1651 2D2D2D2D2D2D2D2D	   230: MSGTOPBAR   .BYTE "---------------------------------",0
+00:1659 2D2D2D2D2D2D2D2D
+00:1661 2D2D2D2D2D2D2D2D
+00:1669 2D2D2D2D2D2D2D2D
+00:1671 2D
+00:1672 00
+00:1673 2020202020444952	   231: MSGDIRLST   .BYTE "     DIRECTORY LIST             ",0
+00:167B 4543544F5259204C
+00:1683 4953542020202020
+00:168B 2020202020202020
+00:1693 00
+00:1694 2020202020535542	   232: MSGUSEINF   .BYTE "     SUBFOLDERS LEFT ALIGNED     ",0
+00:169C 464F4C4445525320
+00:16A4 4C45465420414C49
+00:16AC 474E454420202020
+00:16B4 20
+00:16B5 00
+00:16B6 2D2D2D2D2D2D2D2D	   233: MSGLOWBAR   .BYTE "--------------------------------",0
+00:16BE 2D2D2D2D2D2D2D2D
+00:16C6 2D2D2D2D2D2D2D2D
+00:16CE 2D2D2D2D2D2D2D2D
+00:16D6 00
+                        	   234: 
+                        	   235: ;.export subdirname
+                        	   236: ;subdirname:  .asciiz   "SUBFOLDR   "
+00:16D7 464F525448202020	   237: subdirname:  .asciiz    "FORTH      "
+00:16DF 202020
+00:16E2 00
+                        	   238: ;.export filename
+                        	   239: ;filename: .asciiz "KRUSADER   "
+                        	   240: 
+                        	   241: ;      .segment "VCTRS"
+00:16E3 F414            	   242:       .word DIRLIST            
+                        	   243: ;            RTS
+                        	   244: 
+
+
+Symbols by name:
+CR                               E:000D
+DDRA                             E:7003
+DDRB                             E:7002
+DIRLIST                          A:14F4
+DONE                             A:160B
+ECHO                             E:FFEF
+FSTYPE_FAT32                     E:000C
+LCD_E                            E:0080
+LCD_RS                           E:0020
+LCD_RW                           E:0040
+LF                               E:000A
+MSGDIRLST                        A:1673
+MSGH                             E:0082
+MSGL                             E:0081
+MSGLOWBAR                        A:16B6
+MSGTOPBAR                        A:1651
+MSGUSEINF                        A:1694
+PORTA                            E:7001
+PORTA_OUTPUTPINS                 E:00FC
+PORTB                            E:7000
+PRINT                            A:1601
+PRINTCR                          A:160C
+PRINTLF                          A:1612
+PRINT_HEADING                    A:15AC
+RTNSUB                           A:1432
+SD_CS                            E:0010
+SD_MISO                          E:0002
+SD_MOSI                          E:0004
+SD_SCK                           E:0008
+SHWMSG                           A:15FF
+comparenameloop                  A:13DF
+direntloop                       A:13D7
+done                             A:1452
+done_read                        A:1598
+endofchain                       A:1350
+endofdirectory                   A:13BB
+error                            A:1276
+fail2                            A:11C9
+fat32_address                    E:0054
+fat32_bytesremaining             E:005A
+fat32_datastart                  E:004A
+fat32_errorstage                 E:005A
+fat32_fatstart                   E:0046
+fat32_file_read                  A:1433
+fat32_file_readbyte              A:13EA
+fat32_filenamepointer            E:005A
+fat32_finddirent                 A:13D3
+fat32_init                       A:117A
+fat32_nextcluster                E:0056
+fat32_opendirent                 A:136A
+fat32_openroot                   A:1352
+fat32_pendingsectors             E:0053
+fat32_readbuffer                 E:0200
+fat32_readdirent                 A:139D
+fat32_readnextsector             A:1328
+fat32_rootcluster                E:004E
+fat32_sectorspercluster          E:0052
+fat32_seekcluster                A:1278
+fat32_workspace                  E:0200
+foundpart                        A:11CC
+foundsubdir                      A:1526
+gotdata1                         A:13BD
+gotdata2                         A:1420
+initsuccess                      A:150F
+lcd_cleardisplay                 A:14A1
+lcd_init                         A:1492
+lcd_instruction                  A:147C
+lcd_setpos_startline0            A:14A6
+lcd_setpos_startline1            A:14AB
+lcd_setpos_xy                    A:14B0
+lcd_wait                         A:1453
+lp                               A:14F0
+message                          A:1618
+my_read_directory                A:153A
+notendofchain                    A:1327
+print_char                       A:14BB
+print_dirlist                    A:154C
+print_hex                        A:14D1
+print_nybble                     A:14E0
+readsector                       A:1333
+sd_cmd0_bytes                    A:107E
+sd_cmd41_bytes                   A:1090
+sd_cmd55_bytes                   A:108A
+sd_cmd8_bytes                    A:1084
+sd_init                          A:100B
+sd_readbyte                      A:1096
+sd_readsector                    A:111C
+sd_sendcommand                   A:10D0
+sd_waitresult                    A:10C8
+sd_writebyte                     A:10B1
+sectorincrementdone              A:134E
+short_delay                      A:14EE
+skipfatsloop                     A:123B
+spcshiftloop                     A:12C8
+spcshiftloopdone                 A:12D6
+subdirname                       A:16D7
+via_init                         A:1000
+wholesectorreadloop              A:1442
+zp_fat32_variables               E:0046
+zp_sd_address                    E:0040
+zp_sd_currentsector              E:0042
+
+Symbols by value:
+0002 SD_MISO
+0004 SD_MOSI
+0008 SD_SCK
+000A LF
+000C FSTYPE_FAT32
+000D CR
+0010 SD_CS
+0020 LCD_RS
+0040 LCD_RW
+0040 zp_sd_address
+0042 zp_sd_currentsector
+0046 fat32_fatstart
+0046 zp_fat32_variables
+004A fat32_datastart
+004E fat32_rootcluster
+0052 fat32_sectorspercluster
+0053 fat32_pendingsectors
+0054 fat32_address
+0056 fat32_nextcluster
+005A fat32_bytesremaining
+005A fat32_errorstage
+005A fat32_filenamepointer
+0080 LCD_E
+0081 MSGL
+0082 MSGH
+00FC PORTA_OUTPUTPINS
+0200 fat32_readbuffer
+0200 fat32_workspace
+1000 via_init
+100B sd_init
+107E sd_cmd0_bytes
+1084 sd_cmd8_bytes
+108A sd_cmd55_bytes
+1090 sd_cmd41_bytes
+1096 sd_readbyte
+10B1 sd_writebyte
+10C8 sd_waitresult
+10D0 sd_sendcommand
+111C sd_readsector
+117A fat32_init
+11C9 fail2
+11CC foundpart
+123B skipfatsloop
+1276 error
+1278 fat32_seekcluster
+12C8 spcshiftloop
+12D6 spcshiftloopdone
+1327 notendofchain
+1328 fat32_readnextsector
+1333 readsector
+134E sectorincrementdone
+1350 endofchain
+1352 fat32_openroot
+136A fat32_opendirent
+139D fat32_readdirent
+13BB endofdirectory
+13BD gotdata1
+13D3 fat32_finddirent
+13D7 direntloop
+13DF comparenameloop
+13EA fat32_file_readbyte
+1420 gotdata2
+1432 RTNSUB
+1433 fat32_file_read
+1442 wholesectorreadloop
+1452 done
+1453 lcd_wait
+147C lcd_instruction
+1492 lcd_init
+14A1 lcd_cleardisplay
+14A6 lcd_setpos_startline0
+14AB lcd_setpos_startline1
+14B0 lcd_setpos_xy
+14BB print_char
+14D1 print_hex
+14E0 print_nybble
+14EE short_delay
+14F0 lp
+14F4 DIRLIST
+150F initsuccess
+1526 foundsubdir
+153A my_read_directory
+154C print_dirlist
+1598 done_read
+15AC PRINT_HEADING
+15FF SHWMSG
+1601 PRINT
+160B DONE
+160C PRINTCR
+1612 PRINTLF
+1618 message
+1651 MSGTOPBAR
+1673 MSGDIRLST
+1694 MSGUSEINF
+16B6 MSGLOWBAR
+16D7 subdirname
+7000 PORTB
+7001 PORTA
+7002 DDRB
+7003 DDRA
+FFEF ECHO
